@@ -13,7 +13,7 @@ The program will output the following in the directory where the first of each f
 * A.srm -> A.eep, A1.mpk, A2.mpk, A3.mpk, A4.mpk, A.sra, A.fla (provided that there is actual data in each of the saves)
 * B.mpk, B.eep -> B.srm
 * C.fla, C.srm -> C.srm (updated with C.fla)
-
+* D.srm, D.fla -> D.fla (updated from D.srm)
 
 ## Usage
 
