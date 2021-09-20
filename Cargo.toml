@@ -1,0 +1,10 @@
+[package]
+name = "ra_mp64_srm_convert"
+description = "A simple application to convert to and from Retroarch Mupen64 save file."
+version = "0.9.0"
+authors = ["Daniel Rehren<daniel.rehren.a@gmail.com>"]
+edition = "2018"
+license = "MIT"
+
+[dependencies]
+structopt = "0.3"
