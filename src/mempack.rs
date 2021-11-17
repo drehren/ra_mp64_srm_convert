@@ -1,6 +1,5 @@
 use std::{
   convert::{TryFrom, TryInto},
-  fs::File,
   io::Write,
   num::Wrapping,
 };
@@ -29,7 +28,7 @@ impl From<[u8; 0x8000]> for Mempack {
 impl Mempack {
   pub fn is_empty(&self) -> bool {
     const FREE_SPACE: u16 = u16::from_be_bytes([0, 3]);
-    // check by checking index table, if all unallocated there is no prob
+    // inspect the index table, all unallocated means empty
     for v in self.index_table.inodes.windows(2) {
       let val = u16::from_be_bytes(v.try_into().unwrap());
       if val != FREE_SPACE {
@@ -39,7 +38,10 @@ impl Mempack {
     true
   }
 
-  pub fn save(&self, file: &mut File) -> std::io::Result<()> {
+  pub fn save<T>(&self, file: &mut T) -> std::io::Result<()>
+  where
+    T: Write,
+  {
     self.id_sector.save(file)?;
     self.index_table.save(file)?;
     self.index_table_bkp.save(file)?;
@@ -119,7 +121,10 @@ impl IdBlock {
     }
   }
 
-  fn save(&self, file: &mut File) -> std::io::Result<()> {
+  fn save<T>(&self, file: &mut T) -> std::io::Result<()>
+  where
+    T: Write,
+  {
     file.write_all(&self.serial)?;
     file.write_all(&[self.unused1, self.dev_id, self.bank_size, self.unused2])?;
     file.write_all(&self.checksum1)?;
@@ -195,7 +200,10 @@ impl IdSector {
     }
   }
 
-  fn save(&self, file: &mut File) -> std::io::Result<()> {
+  fn save<T>(&self, file: &mut T) -> std::io::Result<()>
+  where
+    T: Write,
+  {
     file.write_all(&self.label)?;
     self.id_block.save(file)?;
     file.write_all(&self.unused1)?;
@@ -255,7 +263,10 @@ impl IndexTable {
     }
   }
 
-  fn save(&self, file: &mut File) -> std::io::Result<()> {
+  fn save<T>(&self, file: &mut T) -> std::io::Result<()>
+  where
+    T: Write,
+  {
     file.write_all(&[self.unused1, self.checksum])?;
     file.write_all(&self.unused2)?;
     file.write_all(&self.inodes)
@@ -320,7 +331,10 @@ impl NoteEntry {
     }
   }
 
-  fn save(&self, file: &mut File) -> std::io::Result<()> {
+  fn save<T>(&self, file: &mut T) -> std::io::Result<()>
+  where
+    T: Write,
+  {
     file.write_all(&self.game_code)?;
     file.write_all(&self.publ_code)?;
     file.write_all(&self.start_pag)?;
@@ -362,7 +376,10 @@ impl NoteTable {
     }
   }
 
-  fn save(&self, file: &mut File) -> std::io::Result<()> {
+  fn save<T>(&self, file: &mut T) -> std::io::Result<()>
+  where
+    T: Write,
+  {
     for entry in &self.entries {
       entry.save(file)?;
     }

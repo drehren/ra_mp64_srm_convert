@@ -13,9 +13,33 @@ use std::{
 };
 use structopt::StructOpt;
 
+trait Data {
+  fn data(&self) -> &[u8];
+  fn data_mut(&mut self) -> &mut [u8];
+}
+
+trait BasicDataHandle: Data {
+  fn is_empty(&self) -> bool {
+    self.data().iter().rposition(|b| *b != 0xff) == None
+  }
+  fn save(&self, file: &mut File) -> std::io::Result<()> {
+    file.write_all(self.data())
+  }
+}
+
 struct Eeprom {
   data: [u8; 0x800],
 }
+impl Data for Eeprom {
+  fn data(&self) -> &[u8] {
+    &self.data
+  }
+  fn data_mut(&mut self) -> &mut [u8] {
+    &mut self.data
+  }
+}
+impl BasicDataHandle for Eeprom {}
+
 impl Eeprom {
   fn is_empty(&self) -> bool {
     self.data.iter().rposition(|b| *b != 0xff) == None
@@ -155,18 +179,29 @@ impl From<&OsStr> for SaveType {
   }
 }
 
+enum MpkMode<'a> {
+  Split([Option<&'a Path>; 4]),
+  Mupen64(Option<&'a Path>),
+}
+
+impl<'a> Default for MpkMode<'a> {
+  fn default() -> Self {
+    Self::Split([None, None, None, None])
+  }
+}
+
 #[derive(Default)]
 struct ConvertArgs<'a> {
   overwrite: bool,
-  out_dir: Option<&'a PathBuf>,
-  srm_file: Option<&'a PathBuf>,
-  eep_file: Option<&'a PathBuf>,
-  mpk_files: [Option<&'a PathBuf>; 4],
-  sra_file: Option<&'a PathBuf>,
-  fla_file: Option<&'a PathBuf>,
+  out_dir: Option<&'a Path>,
+  srm_file: Option<&'a Path>,
+  eep_file: Option<&'a Path>,
+  mpk: MpkMode<'a>,
+  sra_file: Option<&'a Path>,
+  fla_file: Option<&'a Path>,
 }
 
-fn output_file(in_path: &Path, out_dir: &Option<&PathBuf>) -> PathBuf {
+fn output_file(in_path: &Path, out_dir: &Option<&Path>) -> PathBuf {
   out_dir.map_or_else(
     || in_path.to_owned(),
     |dir| {
@@ -203,13 +238,27 @@ fn to_srm<'a>(args: ConvertArgs<'a>) -> std::io::Result<()> {
   if let Some(path) = args.eep_file {
     load_opts.open(path)?.read(&mut srm.eeprom.data)?;
   }
-  for (i, mp) in args.mpk_files.iter().enumerate() {
-    if let Some(path) = mp {
-      let mut data = [0u8; 0x8000];
-      load_opts.open(path)?.read(data.as_mut())?;
-      srm.mempack[i] = data.into();
+  match args.mpk {
+    MpkMode::Split(mpk_files) => {
+      for (i, mp) in mpk_files.iter().enumerate() {
+        if let Some(path) = mp {
+          let mut data = [0u8; 0x8000];
+          load_opts.open(path)?.read(data.as_mut())?;
+          srm.mempack[i] = data.into();
+        }
+      }
     }
+    MpkMode::Mupen64(Some(mpk_file)) => {
+      let mut file = load_opts.open(mpk_file)?;
+      for i in 0..4 {
+        let mut data = [0u8; 0x8000];
+        file.read(data.as_mut())?;
+        srm.mempack[i] = data.into();
+      }
+    }
+    _ => {}
   }
+
   if let Some(path) = args.sra_file {
     load_opts.open(path)?.read(&mut srm.sram.data)?;
   }
@@ -245,21 +294,30 @@ fn from_srm<'a>(args: ConvertArgs<'a>) -> std::io::Result<()> {
     )?;
     srm.eeprom.save(&mut file)?;
   }
-  for (i, mp) in srm.mempack.iter().enumerate() {
-    if mp.is_empty() {
-      continue;
+
+  match args.mpk {
+    MpkMode::Mupen64(path) => {
+      let mut file = existing_open.open(output_file(path.unwrap(), &args.out_dir))?;
+      for mp in &srm.mempack {
+        mp.save(&mut file)?;
+      }
     }
-    let mut file = args.mpk_files[i].map_or_else(
-      || {
-        let mut file_name = input.file_stem().unwrap().to_owned();
-        file_name.push((i + 1).to_string());
-        file_name.push(".mpk");
-        open_opts.open(output_file(&input.with_file_name(file_name), &args.out_dir))
-      },
-      |f| existing_open.open(output_file(f, &args.out_dir)),
-    )?;
-    mp.save(&mut file)?;
+    MpkMode::Split(paths) => {
+      for (i, mp) in srm.mempack.iter().enumerate() {
+        if mp.is_empty() {
+          continue;
+        }
+        let opts = if paths[i].unwrap().exists() {
+          &existing_open
+        } else {
+          &open_opts
+        };
+        let mut file = opts.open(output_file(paths[i].unwrap(), &args.out_dir))?;
+        mp.save(&mut file)?;
+      }
+    }
   }
+
   if !srm.sram.is_empty() {
     let mut file = args.sra_file.map_or_else(
       || open_opts.open(output_file(&input.with_extension("sra"), &args.out_dir)),
@@ -278,12 +336,16 @@ fn from_srm<'a>(args: ConvertArgs<'a>) -> std::io::Result<()> {
 }
 
 #[derive(StructOpt)]
-/// A simple converter for Retroarch's Mupen64 core save files.
+/// A simple converter for Retroarch Mupen64 core save files.
 /// It detects the input file and "converts" it into an *.srm, or extracts from it into the other files.
 struct MupenSrmConvert {
   #[structopt(long)]
   /// If set, the program can overwrite an existing filesystem files
   overwrite: bool,
+
+  #[structopt(long)]
+  /// If set, the program will treat mpk files to be from mupen64 (128k file)
+  mupen64_mpk: bool,
 
   #[structopt(long, parse(from_os_str))]
   /// Specify the output directory for the created file (or files)
@@ -304,7 +366,7 @@ fn run() -> std::io::Result<Vec<(String, std::io::Error)>> {
     if out_dir.exists() && !out_dir.is_dir() {
       return Err(std::io::Error::new(
         ErrorKind::Other,
-        "Ouput directory path is not a directory!",
+        "Output directory path is not a directory!",
       ));
     }
     if !out_dir.exists() {
@@ -348,6 +410,7 @@ fn run() -> std::io::Result<Vec<(String, std::io::Error)>> {
 
   let work_groups = map.len();
 
+  let mupen64mpk = args.mupen64_mpk;
   // Now work per file name
   for files in map.into_values() {
     let (path, save_type) = files.front().unwrap();
@@ -358,13 +421,19 @@ fn run() -> std::io::Result<Vec<(String, std::io::Error)>> {
     };
 
     let mut mpk_idx = 0;
-    for (file, stype) in &files {
-      match stype {
+    for (file, save_type) in &files {
+      match save_type {
         SaveType::EEP => args.eep_file = Some(file),
         SaveType::FLA => args.fla_file = Some(file),
         SaveType::MPK => {
-          args.mpk_files[mpk_idx] = Some(file);
-          mpk_idx += 1;
+          if mupen64mpk {
+            args.mpk = MpkMode::Mupen64(Some(file));
+          } else {
+            if let MpkMode::Split(mpk_files) = &mut args.mpk {
+              mpk_files[mpk_idx] = Some(file);
+              mpk_idx += 1;
+            }
+          }
         }
         SaveType::SRA => args.sra_file = Some(file),
         SaveType::SRM => args.srm_file = Some(file),
@@ -373,11 +442,44 @@ fn run() -> std::io::Result<Vec<(String, std::io::Error)>> {
     }
 
     match match save_type {
-      SaveType::SRM => from_srm(args),
+      SaveType::SRM => {
+        // to not drop values
+        let mut mpk_paths = [
+          PathBuf::new(),
+          PathBuf::new(),
+          PathBuf::new(),
+          PathBuf::new(),
+        ];
+
+        // check that names are ready for all mpk
+        match &mut args.mpk {
+          MpkMode::Mupen64(mpk_path) => {
+            if mpk_path.is_none() {
+              mpk_paths[0] = path.with_extension("mpk");
+              let _ = mpk_path.insert(&mpk_paths[0]);
+            }
+          }
+          MpkMode::Split(paths) => {
+            for i in 0..4 {
+              if paths[i].is_some() {
+                continue;
+              }
+              let mut file_name = path.file_stem().unwrap().to_owned();
+              file_name.push((i + 1).to_string());
+              file_name.push(".mpk");
+              mpk_paths[i] = file_name.into();
+            }
+            for i in 0..4 {
+              paths[i] = Some(&mpk_paths[i]);
+            }
+          }
+        }
+        from_srm(args)
+      }
       _ => {
-        let srmp = path.with_extension("srm");
+        let path = path.with_extension("srm");
         if args.srm_file.is_none() {
-          args.srm_file = Some(&srmp);
+          args.srm_file = Some(&path);
         }
         to_srm(args)
       }
