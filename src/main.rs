@@ -1,8 +1,8 @@
 mod game_pack;
 use game_pack::*;
 
-mod mempack;
-use mempack::*;
+mod controller_pack;
+use controller_pack::*;
 
 use clap::Parser;
 use std::{
