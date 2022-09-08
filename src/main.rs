@@ -285,14 +285,24 @@ fn run() -> io::Result<Vec<(String, std::io::Error)>> {
     } else {
       continue;
     };
-    if save_type == SaveType::UNSUPPORTED {
-      continue;
-    }
 
-    // get the vector
-    let vector = file
-      .file_stem()
-      .map(|name| map.entry(name.into()).or_default());
+    // get the files vector
+    let vector = match save_type {
+      SaveType::UNSUPPORTED => continue,
+      SaveType::MPK => {
+        // remove last mempack digit, if any
+        file.file_stem().map(|name| {
+          let mut name = name.to_string_lossy().to_string();
+          if name.ends_with(|c: char| c.is_digit(5)) {
+            name.pop();
+          }
+          map.entry(name.into()).or_default()
+        })
+      }
+      _ => file
+        .file_stem()
+        .map(|name| map.entry(name.into()).or_default()),
+    };
 
     if let Some(v) = vector {
       v.push_back((file, save_type));
