@@ -69,58 +69,7 @@ impl DerefMut for Mempack {
   }
 }
 
-#[derive(Clone, Copy)]
-pub struct Page([u8; 256]);
-impl Page {
-  fn new() -> Self {
-    Self([0; 256])
-  }
-}
-
-#[derive(Clone, Copy)]
-struct IdBlock {
-  serial: [u8; 24],
-  unused1: u8,
-  dev_id: u8,
-  bank_size: u8,
-  unused2: u8,
-  checksum1: [u8; 2],
-  checksum2: [u8; 2],
-}
-
-impl IdBlock {
-  fn new() -> Self {
-    Self {
-      serial: [0; 24],
-      unused1: 0,
-      dev_id: 0,
-      bank_size: 0,
-      unused2: 0,
-      checksum1: [0; 2],
-      checksum2: [0; 2],
-    }
-  }
-
-  fn init_with_serial(&mut self, serial: &[u8; 24]) {
-    self.serial.copy_from_slice(serial);
-    self.unused1 = 0xff;
-    self.dev_id = 0xff;
-    self.bank_size = 1;
-    self.unused2 = 0xff;
-
-    let mut sum = Wrapping(0u16);
-    for data in self.serial.windows(2) {
-      sum += Wrapping(u16::from_be_bytes(data.try_into().unwrap()));
-    }
-    sum += Wrapping(u16::from_be_bytes([self.unused1, self.dev_id]));
-    sum += Wrapping(u16::from_be_bytes([self.bank_size, self.unused2]));
-
-    self.checksum1.copy_from_slice(&sum.0.to_be_bytes());
-    sum = Wrapping(u16::from_be(0xF2FF)) - sum;
-    self.checksum2.copy_from_slice(&sum.0.to_be_bytes());
-  }
-}
-
+#[repr(C)]
 #[derive(Clone, Copy)]
 struct IdSector {
   label: [u8; 32],
@@ -165,6 +114,52 @@ impl IdSector {
   }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct IdBlock {
+  serial: [u8; 24],
+  unused1: u8,
+  dev_id: u8,
+  bank_size: u8,
+  unused2: u8,
+  checksum1: [u8; 2],
+  checksum2: [u8; 2],
+}
+
+impl IdBlock {
+  fn new() -> Self {
+    Self {
+      serial: [0; 24],
+      unused1: 0,
+      dev_id: 0,
+      bank_size: 0,
+      unused2: 0,
+      checksum1: [0; 2],
+      checksum2: [0; 2],
+    }
+  }
+
+  fn init_with_serial(&mut self, serial: &[u8; 24]) {
+    self.serial.copy_from_slice(serial);
+    self.unused1 = 0xff;
+    self.dev_id = 0xff;
+    self.bank_size = 1;
+    self.unused2 = 0xff;
+
+    let mut sum = Wrapping(0u16);
+    for data in self.serial.windows(2) {
+      sum += Wrapping(u16::from_be_bytes(data.try_into().unwrap()));
+    }
+    sum += Wrapping(u16::from_be_bytes([self.unused1, self.dev_id]));
+    sum += Wrapping(u16::from_be_bytes([self.bank_size, self.unused2]));
+
+    self.checksum1.copy_from_slice(&sum.0.to_be_bytes());
+    sum = Wrapping(u16::from_be(0xF2FF)) - sum;
+    self.checksum2.copy_from_slice(&sum.0.to_be_bytes());
+  }
+}
+
+#[repr(C)]
 #[derive(Clone, Copy)]
 struct IndexTable {
   unused1: u8,
@@ -201,9 +196,19 @@ impl IndexTable {
   }
 }
 
+#[repr(C)]
 struct NoteTable([u8; 16 * 32]); // notes * note_size
 impl NoteTable {
   fn new() -> Self {
     Self([0u8; 16 * 32])
+  }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Page([u8; 256]);
+impl Page {
+  fn new() -> Self {
+    Self([0; 256])
   }
 }

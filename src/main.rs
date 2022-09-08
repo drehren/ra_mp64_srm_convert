@@ -65,9 +65,6 @@ impl RetroArchSrm {
     load(&mut self.eeprom, file)?;
     for i in 0..4 {
       load(&mut self.mempack[i], file)?;
-      // let mut data = [0; 0x8000];
-      // file.read_exact(data.as_mut())?;
-      // self.mempack[i] = data.into();
     }
     load(&mut self.sram, file)?;
     load(&mut self.flashram, file)
@@ -76,7 +73,6 @@ impl RetroArchSrm {
   fn store(&self, file: &mut File) -> io::Result<()> {
     store(&self.eeprom, file)?;
     for mp in &self.mempack {
-      // mp.save(file)?;
       store(mp, file)?;
     }
     store(&self.sram, file)?;
