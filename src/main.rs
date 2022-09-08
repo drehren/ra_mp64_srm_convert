@@ -1,83 +1,45 @@
+mod game_pack;
+use game_pack::*;
+
 mod mempack;
+use mempack::*;
 
-use mempack::Mempack;
-
+use clap::Parser;
 use std::{
   collections::{HashMap, VecDeque},
   ffi::{OsStr, OsString},
   fs::{File, OpenOptions},
-  io::Read,
-  io::{ErrorKind, Write},
+  io::{self, ErrorKind, Read, Write},
+  ops::{Deref, DerefMut},
   path::{Path, PathBuf},
   str::FromStr,
 };
-use structopt::StructOpt;
 
-struct Eeprom {
-  data: [u8; 0x800],
+/// Loads `B` with enough data from `R`
+pub fn load<B, R>(into: &mut B, from: &mut R) -> io::Result<()>
+where
+  R: Read,
+  B: DerefMut<Target = [u8]>,
+{
+  from.read_exact(into)
 }
-impl Eeprom {
-  fn is_empty(&self) -> bool {
-    self.data.iter().rposition(|b| *b != 0xff) == None
-  }
-
-  fn new() -> Self {
-    Self {
-      data: [0xff; 0x800],
-    }
-  }
-
-  fn save(&self, file: &mut File) -> std::io::Result<()> {
-    file.write_all(&self.data)
-  }
+/// Stores `B` bytes to `R`
+pub fn store<B, W>(data: &B, into: &mut W) -> io::Result<()>
+where
+  W: Write,
+  B: Deref<Target = [u8]>,
+{
+  into.write_all(&data)
 }
 
-struct Sram {
-  data: [u8; 0x8000],
-}
-impl Sram {
-  fn is_empty(&self) -> bool {
-    self.data.iter().rposition(|b| *b != 0xff) == None
-  }
-
-  fn new() -> Self {
-    Self {
-      data: [0xff; 0x8000],
-    }
-  }
-
-  fn save(&self, file: &mut File) -> std::io::Result<()> {
-    file.write_all(&self.data)
-  }
-}
-
-struct FlashRam {
-  data: [u8; 0x20000],
-}
-impl FlashRam {
-  fn is_empty(&self) -> bool {
-    self.data.iter().rposition(|b| *b != 0xff) == None
-  }
-
-  fn new() -> Self {
-    Self {
-      data: [0xff; 0x20000],
-    }
-  }
-
-  fn save(&self, file: &mut File) -> std::io::Result<()> {
-    file.write_all(&self.data)
-  }
-}
-
-struct Srm {
+pub struct RetroArchSrm {
   eeprom: Eeprom,
   mempack: [Mempack; 4],
   sram: Sram,
   flashram: FlashRam,
 }
 
-impl Srm {
+impl RetroArchSrm {
   fn new() -> Self {
     Self {
       eeprom: Eeprom::new(),
@@ -99,27 +61,30 @@ impl Srm {
     }
   }
 
-  fn load(&mut self, file: &mut File) -> std::io::Result<()> {
-    file.read(&mut self.eeprom.data)?;
+  fn load(&mut self, file: &mut File) -> io::Result<()> {
+    load(&mut self.eeprom, file)?;
     for i in 0..4 {
-      let mut data = [0; 0x8000];
-      file.read_exact(data.as_mut())?;
-      self.mempack[i] = data.into();
+      load(&mut self.mempack[i], file)?;
+      // let mut data = [0; 0x8000];
+      // file.read_exact(data.as_mut())?;
+      // self.mempack[i] = data.into();
     }
-    file.read(&mut self.sram.data)?;
-    file.read(&mut self.flashram.data).map(|_| ())
+    load(&mut self.sram, file)?;
+    load(&mut self.flashram, file)
   }
 
-  fn save(&self, file: &mut File) -> std::io::Result<()> {
-    self.eeprom.save(file)?;
+  fn store(&self, file: &mut File) -> io::Result<()> {
+    store(&self.eeprom, file)?;
     for mp in &self.mempack {
-      mp.save(file)?;
+      // mp.save(file)?;
+      store(mp, file)?;
     }
-    self.sram.save(file)?;
-    self.flashram.save(file)
+    store(&self.sram, file)?;
+    store(&self.flashram, file)
   }
 }
 
+#[derive(PartialEq)]
 enum SaveType {
   UNSUPPORTED,
   SRM,
@@ -177,9 +142,9 @@ fn output_file(in_path: &Path, out_dir: &Option<&PathBuf>) -> PathBuf {
   )
 }
 
-fn to_srm<'a>(args: ConvertArgs<'a>) -> std::io::Result<()> {
+fn to_srm<'a>(args: ConvertArgs<'a>) -> io::Result<()> {
   // here we should get the files to put into the srm
-  let mut srm = Box::new(Srm::new());
+  let mut srm = Box::new(RetroArchSrm::new());
   srm.init();
 
   let mut load_opts = OpenOptions::new();
@@ -201,30 +166,28 @@ fn to_srm<'a>(args: ConvertArgs<'a>) -> std::io::Result<()> {
   }
 
   if let Some(path) = args.eep_file {
-    load_opts.open(path)?.read(&mut srm.eeprom.data)?;
+    load(&mut srm.eeprom, &mut load_opts.open(path)?)?;
   }
   for (i, mp) in args.mpk_files.iter().enumerate() {
     if let Some(path) = mp {
-      let mut data = [0u8; 0x8000];
-      load_opts.open(path)?.read(data.as_mut())?;
-      srm.mempack[i] = data.into();
+      load(&mut srm.mempack[i], &mut load_opts.open(path)?)?;
     }
   }
   if let Some(path) = args.sra_file {
-    load_opts.open(path)?.read(&mut srm.sram.data)?;
+    load(&mut srm.sram, &mut load_opts.open(path)?)?;
   }
   if let Some(path) = args.fla_file {
-    load_opts.open(path)?.read(&mut srm.flashram.data)?;
+    load(&mut srm.flashram, &mut load_opts.open(path)?)?;
   }
 
   let mut srm_file = save_opts.open(output_file(args.srm_file.unwrap(), &args.out_dir))?;
-  srm.save(&mut srm_file)
+  srm.store(&mut srm_file)
 }
 
-fn from_srm<'a>(args: ConvertArgs<'a>) -> std::io::Result<()> {
+fn from_srm<'a>(args: ConvertArgs<'a>) -> io::Result<()> {
   let input = args.srm_file.as_ref().unwrap();
 
-  let mut srm = Box::from(Srm::new());
+  let mut srm = Box::from(RetroArchSrm::new());
   {
     let mut file = OpenOptions::new().read(true).open(input)?;
     srm.load(&mut file)?;
@@ -243,7 +206,7 @@ fn from_srm<'a>(args: ConvertArgs<'a>) -> std::io::Result<()> {
       || open_opts.open(output_file(&input.with_extension("eep"), &args.out_dir)),
       |f| existing_open.open(output_file(f, &args.out_dir)),
     )?;
-    srm.eeprom.save(&mut file)?;
+    store(&srm.eeprom, &mut file)?;
   }
   for (i, mp) in srm.mempack.iter().enumerate() {
     if mp.is_empty() {
@@ -258,45 +221,49 @@ fn from_srm<'a>(args: ConvertArgs<'a>) -> std::io::Result<()> {
       },
       |f| existing_open.open(output_file(f, &args.out_dir)),
     )?;
-    mp.save(&mut file)?;
+    store(mp, &mut file)?;
   }
   if !srm.sram.is_empty() {
     let mut file = args.sra_file.map_or_else(
       || open_opts.open(output_file(&input.with_extension("sra"), &args.out_dir)),
       |f| existing_open.open(output_file(f, &args.out_dir)),
     )?;
-    srm.sram.save(&mut file)?;
+    store(&srm.sram, &mut file)?;
   }
   if !srm.flashram.is_empty() {
     let mut file = args.fla_file.map_or_else(
       || open_opts.open(output_file(&input.with_extension("fla"), &args.out_dir)),
       |f| existing_open.open(output_file(f, &args.out_dir)),
     )?;
-    srm.flashram.save(&mut file)?;
+    store(&srm.flashram, &mut file)?;
   }
   Ok(())
 }
 
-#[derive(StructOpt)]
+#[derive(Parser)]
+#[clap(verbatim_doc_comment)]
 /// A simple converter for Retroarch's Mupen64 core save files.
-/// It detects the input file and "converts" it into an *.srm, or extracts from it into the other files.
+///
+/// It detects the save (based on its extension) and does the following:
+/// - .eep|.fla|.mpk*|.sav: groups based on the file names and creates and .srm file.
+/// - .srm                : extracts save data and creates .eep, .fla, .mpk*, .sav file(s).
 struct MupenSrmConvert {
-  #[structopt(long)]
   /// If set, the program can overwrite an existing filesystem files
+  #[clap(long)]
   overwrite: bool,
 
-  #[structopt(long, parse(from_os_str))]
   /// Specify the output directory for the created file (or files)
+  #[clap(long, parse(from_os_str))]
   output_dir: Option<PathBuf>,
 
-  #[structopt(parse(from_os_str), min_values = 1, required = true)]
   /// The input file(s).
   /// It can be *.srm (to extract), or *.sra, *.fla, *.eep or *.mpk (to create, based on file name)
+  #[clap(parse(from_os_str), min_values = 1, required = true)]
   files: Vec<PathBuf>,
 }
 
-fn run() -> std::io::Result<Vec<(String, std::io::Error)>> {
-  let args = MupenSrmConvert::from_args();
+fn run() -> io::Result<Vec<(String, std::io::Error)>> {
+  let args = MupenSrmConvert::parse();
   let mut map = HashMap::<OsString, VecDeque<(PathBuf, SaveType)>>::new();
 
   // if there is out dir, check!
@@ -304,7 +271,7 @@ fn run() -> std::io::Result<Vec<(String, std::io::Error)>> {
     if out_dir.exists() && !out_dir.is_dir() {
       return Err(std::io::Error::new(
         ErrorKind::Other,
-        "Ouput directory path is not a directory!",
+        "Output directory path is not a directory!",
       ));
     }
     if !out_dir.exists() {
@@ -313,18 +280,17 @@ fn run() -> std::io::Result<Vec<(String, std::io::Error)>> {
   }
 
   for file in args.files.into_iter() {
-    if file.exists() && !file.is_file() {
+    if !file.exists() || !file.is_file() {
       continue;
     }
 
-    let save_type: SaveType = if let Some(ext) = file.extension() {
-      ext.into()
+    let save_type = if let Some(ext) = file.extension() {
+      Into::<SaveType>::into(ext)
     } else {
       continue;
     };
-    match save_type {
-      SaveType::UNSUPPORTED => continue,
-      _ => {}
+    if save_type == SaveType::UNSUPPORTED {
+      continue;
     }
 
     // get the vector
@@ -358,8 +324,8 @@ fn run() -> std::io::Result<Vec<(String, std::io::Error)>> {
     };
 
     let mut mpk_idx = 0;
-    for (file, stype) in &files {
-      match stype {
+    for (file, sav_type) in &files {
+      match sav_type {
         SaveType::EEP => args.eep_file = Some(file),
         SaveType::FLA => args.fla_file = Some(file),
         SaveType::MPK => {
@@ -375,9 +341,9 @@ fn run() -> std::io::Result<Vec<(String, std::io::Error)>> {
     match match save_type {
       SaveType::SRM => from_srm(args),
       _ => {
-        let srmp = path.with_extension("srm");
+        let srm_path = path.with_extension("srm");
         if args.srm_file.is_none() {
-          args.srm_file = Some(&srmp);
+          args.srm_file = Some(&srm_path);
         }
         to_srm(args)
       }
@@ -406,7 +372,7 @@ fn main() {
   match run() {
     Ok(file_errs) => {
       if !file_errs.is_empty() {
-        println!("WARN: Some errors found while working");
+        println!("ERROR: Some errors found while working");
       }
       for err in file_errs.into_iter() {
         println!("ERROR: while working with '{}': {}", err.0, err.1)
