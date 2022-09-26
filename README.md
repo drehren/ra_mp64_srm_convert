@@ -10,7 +10,7 @@ For example if you do:
 $ ra_mp64_srm_convert A.srm B.mpk B.eep C.fla C.srm D.srm D.fla
 ```
 The program will output the following in the directory where the first of each file was:
-* A.srm -> A.eep, A1.mpk, A2.mpk, A3.mpk, A4.mpk, A.sra, A.fla (provided that there is actual data in each of the saves)
+* A.srm -> A.eep, A.1.mpk, A.2.mpk, A.3.mpk, A.4.mpk, A.sra, A.fla (provided that there is actual data in each of the saves)
 * B.mpk, B.eep -> B.srm
 * C.fla, C.srm -> C.srm (updated with C.fla)
 * D.srm, D.fla -> D.fla (updated from D.srm)
@@ -19,19 +19,45 @@ The program will output the following in the directory where the first of each f
 
 To use it, simply drag and drop the file(s) into the program and it'll try to know what to do.
 
+    ra_mp64_srm_convert 0.10.0
+    A simple converter for Retroarch's Mupen64 core save files.
+
+    It (tries) to detect the save file and does one of the following:
+    - .eep|.fla|*.mpk|.sav: group based on the file names and creates and .srm file.
+    - .srm                : extract save data and creates .eep, .fla, .*.mpk, .sav file(s).
+
     USAGE:
-        ra_mp64_srm_convert.exe [FLAGS] [OPTIONS] <files>...
-
-    FLAGS:
-        -h, --help         Prints help information
-            --overwrite    If set, the program can overwrite an existing filesystem files
-        -V, --version      Prints version information
-
-    OPTIONS:
-            --output-dir <output-dir>    Specify the output directory for the created file (or files)
+        ra_mp64_srm_convert [OPTIONS] <FILES>...
 
     ARGS:
-        <files>...    The input file(s). It can be *.srm (to extract), or *.sra, *.fla, *.eep or *.mpk (to create, based on file name)
+        <FILES>...
+                The input file(s). It can be *.srm (to extract), or *.sra, *.fla, *.eep or *.mpk (to
+                create, based on file name)
+
+    OPTIONS:
+        -h, --help
+                Print help information
+
+            --log-file <LOG_FILE>
+                Logs to the specified file
+
+            --output-dir <OUTPUT_DIR>
+                Specify the output directory for the created file (or files)
+
+            --merge-mempacks
+                If set, the controller pack memory files will be merged into one
+
+            --overwrite
+                If set, the program can overwrite an existing filesystem files
+
+        -q, --quiet
+                Set this to suppress all output
+
+        -v, --verbose
+                Sets the verbose output (the more, the merrier!)
+
+        -V, --version
+                Print version information
 
 
 ## Building

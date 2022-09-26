@@ -1,249 +1,246 @@
 mod game_pack;
-use game_pack::*;
+mod retroarch_srm;
 
 mod controller_pack;
 use controller_pack::*;
 
+mod create_srm;
+use create_srm::*;
+
+mod split_srm;
+use split_srm::*;
+
+#[macro_use]
+mod logger;
+use logger::*;
+
 use clap::Parser;
-use std::{
-  collections::{HashMap, VecDeque},
-  ffi::{OsStr, OsString},
-  fs::{File, OpenOptions},
-  io::{self, ErrorKind, Read, Write},
-  ops::{Deref, DerefMut},
-  path::{Path, PathBuf},
-  str::FromStr,
-};
 
-/// Loads `B` with enough data from `R`
-pub fn load<B, R>(into: &mut B, from: &mut R) -> io::Result<()>
-where
-  R: Read,
-  B: DerefMut<Target = [u8]>,
-{
-  from.read_exact(into)
-}
-/// Stores `B` bytes to `R`
-pub fn store<B, W>(data: &B, into: &mut W) -> io::Result<()>
-where
-  W: Write,
-  B: Deref<Target = [u8]>,
-{
-  into.write_all(&data)
+use std::collections::HashMap;
+use std::convert::TryFrom;
+use std::fmt::Debug;
+use std::fs::OpenOptions;
+use std::io::{self, ErrorKind};
+use std::path::{Path, PathBuf};
+
+fn get_pack_number<P: AsRef<Path>>(path: &P) -> Option<usize> {
+  let str = path.as_ref().parent()?.to_str()?;
+  let last = str.chars().last()?;
+  Some(last.to_digit(5)?.checked_sub(1)? as usize)
 }
 
-pub struct RetroArchSrm {
-  eeprom: Eeprom,
-  mempack: [Mempack; 4],
-  sram: Sram,
-  flashram: FlashRam,
+#[derive(Debug, Default, Clone)]
+enum SingleMulti {
+  #[default]
+  Empty,
+  Single(PathBuf),
+  Multiple(Vec<Option<PathBuf>>),
+}
+impl SingleMulti {
+  fn take(&mut self) -> SingleMulti {
+    std::mem::replace(self, SingleMulti::Empty)
+  }
+  fn single(self) -> Option<PathBuf> {
+    match self {
+      SingleMulti::Empty => None,
+      SingleMulti::Multiple(v) => v[0].clone(),
+      SingleMulti::Single(p) => Some(p),
+    }
+  }
+}
+#[derive(Debug)]
+enum ConvertMode {
+  Merge(Option<PathBuf>),
+  Split(PathBuf),
+}
+#[derive(Debug, Default)]
+pub struct ConvertArgs {
+  eep_path: Option<PathBuf>,
+  sra_path: Option<PathBuf>,
+  fla_path: Option<PathBuf>,
+  mpk_path: SingleMulti,
 }
 
-impl RetroArchSrm {
-  fn new() -> Self {
-    Self {
-      eeprom: Eeprom::new(),
-      mempack: [
-        Mempack::new(),
-        Mempack::new(),
-        Mempack::new(),
-        Mempack::new(),
-      ],
-      sram: Sram::new(),
-      flashram: FlashRam::new(),
+impl ConvertArgs {
+  fn insert(&mut self, save: SaveFile) {
+    match save.save_type {
+      SaveType::EEP => self.eep_path = Some(save.path),
+      SaveType::FLA => self.fla_path = Some(save.path),
+      SaveType::SRA => self.sra_path = Some(save.path),
+      SaveType::MPK(CpSaveType::Split(None)) => {}
+      SaveType::MPK(CpSaveType::Split(Some(idx))) => {
+        let mut v = match self.mpk_path.take() {
+          SingleMulti::Multiple(v) => v,
+          _ => Vec::new(),
+        };
+        if idx > v.len() {
+          v.resize(idx + 1, None);
+        }
+        v.insert(idx, Some(save.path));
+        self.mpk_path = SingleMulti::Multiple(v)
+      }
+      SaveType::MPK(CpSaveType::Mp64) => self.mpk_path = SingleMulti::Single(save.path),
+      _ => {}
     }
-  }
-
-  fn init(&mut self) {
-    // Initialize the mempacks
-    for mp in &mut self.mempack {
-      mp.init()
-    }
-  }
-
-  fn load(&mut self, file: &mut File) -> io::Result<()> {
-    load(&mut self.eeprom, file)?;
-    for i in 0..4 {
-      load(&mut self.mempack[i], file)?;
-    }
-    load(&mut self.sram, file)?;
-    load(&mut self.flashram, file)
-  }
-
-  fn store(&self, file: &mut File) -> io::Result<()> {
-    store(&self.eeprom, file)?;
-    for mp in &self.mempack {
-      store(mp, file)?;
-    }
-    store(&self.sram, file)?;
-    store(&self.flashram, file)
   }
 }
 
-#[derive(PartialEq)]
-enum SaveType {
+#[derive(Debug)]
+struct ConvertModeArgs {
+  mode: ConvertMode,
+  args: ConvertArgs,
+}
+impl ConvertModeArgs {
+  fn new(save: SaveFile) -> Self {
+    match save.save_type {
+      SaveType::SRM => Self {
+        mode: ConvertMode::Split(save.path),
+        args: Default::default(),
+      },
+      _ => {
+        let mut me = Self {
+          mode: ConvertMode::Merge(None),
+          args: Default::default(),
+        };
+        me.insert(save);
+        me
+      }
+    }
+  }
+  fn insert(&mut self, save: SaveFile) {
+    match save.save_type {
+      SaveType::SRM => {
+        if let ConvertMode::Merge(None) = self.mode {
+          self.mode = ConvertMode::Merge(Some(save.path))
+        }
+      }
+      _ => self.args.insert(save),
+    }
+  }
+}
+
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub enum CpSaveType {
+  Mp64,
+  Split(Option<usize>),
+}
+
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub enum SaveType {
   UNSUPPORTED,
   SRM,
   FLA,
   EEP,
   SRA,
-  MPK,
+  MPK(CpSaveType),
 }
-impl FromStr for SaveType {
-  type Err = &'static str;
 
-  fn from_str(s: &str) -> Result<Self, Self::Err> {
-    match s.to_uppercase().as_str() {
-      "SRM" => Ok(SaveType::SRM),
-      "FLA" => Ok(SaveType::FLA),
-      "EEP" => Ok(SaveType::EEP),
-      "MPK" => Ok(SaveType::MPK),
-      "SRA" => Ok(SaveType::SRA),
-      _ => Err("Unexpected save type"),
-    }
-  }
-}
-impl From<&OsStr> for SaveType {
-  fn from(s: &OsStr) -> Self {
-    match s.to_ascii_uppercase().to_str() {
+impl SaveType {
+  fn infer_from_path<P: AsRef<Path>>(path: &P) -> SaveType {
+    // filename extension detection
+    let path = path.as_ref();
+    match &path.extension().unwrap().to_ascii_uppercase().to_str() {
       Some("SRM") => SaveType::SRM,
+      Some("SRA") => SaveType::SRA,
       Some("FLA") => SaveType::FLA,
       Some("EEP") => SaveType::EEP,
-      Some("MPK") => SaveType::MPK,
-      Some("SRA") => SaveType::SRA,
+      Some("MPK") => SaveType::MPK(CpSaveType::Split(get_pack_number(&path))),
       _ => SaveType::UNSUPPORTED,
     }
   }
-}
 
-#[derive(Default)]
-struct ConvertArgs<'a> {
-  overwrite: bool,
-  out_dir: Option<&'a PathBuf>,
-  srm_file: Option<&'a PathBuf>,
-  eep_file: Option<&'a PathBuf>,
-  mpk_files: [Option<&'a PathBuf>; 4],
-  sra_file: Option<&'a PathBuf>,
-  fla_file: Option<&'a PathBuf>,
-}
+  fn infer_from_data<P: AsRef<Path>>(path: &P) -> std::io::Result<SaveType> {
+    // we can identify the saves based on their file size & first bytes
+    // we can also check if the saves are byteswapped or not
+    let path = path.as_ref();
 
-fn output_file(in_path: &Path, out_dir: &Option<&PathBuf>) -> PathBuf {
-  out_dir.map_or_else(
-    || in_path.to_owned(),
-    |dir| {
-      let mut out_dir = dir.to_path_buf();
-      out_dir.push(in_path.file_name().unwrap());
-      out_dir
-    },
-  )
-}
+    if path.file_name().is_none() {
+      return Ok(SaveType::UNSUPPORTED);
+    }
 
-fn to_srm<'a>(args: ConvertArgs<'a>) -> io::Result<()> {
-  // here we should get the files to put into the srm
-  let mut srm = Box::new(RetroArchSrm::new());
-  srm.init();
+    let load_check = |not_cp, mp| -> io::Result<SaveType> {
+      let mut file = std::fs::File::open(path)?;
+      match ControllerPack::infer_from(&mut file) {
+        Ok(check) if check == Check::NotAControllerPack => Ok(not_cp),
+        Ok(_) => Ok(SaveType::MPK(mp)),
+        Err(_) => Ok(SaveType::UNSUPPORTED),
+      }
+    };
 
-  let mut load_opts = OpenOptions::new();
-  load_opts.read(true);
-
-  // setup now the save options in case the srm file exists, which we should update
-  let mut save_opts = OpenOptions::new();
-  save_opts
-    .create(args.overwrite)
-    .create_new(!args.overwrite)
-    .write(true);
-
-  // If the srm file exists, its update mode!
-  if let Some(srm_file) = &args.srm_file {
-    if srm_file.is_file() {
-      srm.load(&mut load_opts.open(srm_file)?)?;
-      save_opts.create(true).create_new(false);
+    match path.metadata().map(|m| m.len()) {
+      Ok(0x800) => Ok(SaveType::EEP),
+      Ok(0x8000) => load_check(SaveType::SRA, CpSaveType::Split(get_pack_number(&path))),
+      Ok(0x20000) => load_check(SaveType::FLA, CpSaveType::Mp64),
+      Ok(0x48800) => Ok(SaveType::SRM),
+      Ok(_) => Ok(SaveType::UNSUPPORTED),
+      _ => unreachable!(),
     }
   }
-
-  if let Some(path) = args.eep_file {
-    load(&mut srm.eeprom, &mut load_opts.open(path)?)?;
-  }
-  for (i, mp) in args.mpk_files.iter().enumerate() {
-    if let Some(path) = mp {
-      load(&mut srm.mempack[i], &mut load_opts.open(path)?)?;
-    }
-  }
-  if let Some(path) = args.sra_file {
-    load(&mut srm.sram, &mut load_opts.open(path)?)?;
-  }
-  if let Some(path) = args.fla_file {
-    load(&mut srm.flashram, &mut load_opts.open(path)?)?;
-  }
-
-  let mut srm_file = save_opts.open(output_file(args.srm_file.unwrap(), &args.out_dir))?;
-  srm.store(&mut srm_file)
 }
 
-fn from_srm<'a>(args: ConvertArgs<'a>) -> io::Result<()> {
-  let input = args.srm_file.as_ref().unwrap();
+#[derive(Clone)]
+pub struct SaveFile {
+  path: PathBuf,
+  save_type: SaveType,
+}
 
-  let mut srm = Box::from(RetroArchSrm::new());
-  {
-    let mut file = OpenOptions::new().read(true).open(input)?;
-    srm.load(&mut file)?;
-  }
+impl TryFrom<PathBuf> for SaveFile {
+  type Error = io::Error;
 
-  let mut open_opts = OpenOptions::new();
-  open_opts
-    .create(args.overwrite)
-    .create_new(!args.overwrite)
-    .write(true);
-  let mut existing_open = OpenOptions::new();
-  existing_open.create(true).write(true);
-
-  if !srm.eeprom.is_empty() {
-    let mut file = args.eep_file.map_or_else(
-      || open_opts.open(output_file(&input.with_extension("eep"), &args.out_dir)),
-      |f| existing_open.open(output_file(f, &args.out_dir)),
-    )?;
-    store(&srm.eeprom, &mut file)?;
-  }
-  for (i, mp) in srm.mempack.iter().enumerate() {
-    if mp.is_empty() {
-      continue;
+  fn try_from(path: PathBuf) -> Result<Self, Self::Error> {
+    if (path.exists() && !path.is_file()) || (!path.exists() && !path.extension().is_none()) {
+      Err(io::Error::new(
+        ErrorKind::Other,
+        format!("Impossible to determine the save type from {:#?}", path),
+      ))
+    } else if !path.exists() {
+      Ok(Self {
+        save_type: SaveType::infer_from_path(&path),
+        path,
+      })
+    } else {
+      Ok(Self {
+        save_type: SaveType::infer_from_data(&path)?,
+        path,
+      })
     }
-    let mut file = args.mpk_files[i].map_or_else(
-      || {
-        let mut file_name = input.file_stem().unwrap().to_owned();
-        file_name.push((i + 1).to_string());
-        file_name.push(".mpk");
-        open_opts.open(output_file(&input.with_file_name(file_name), &args.out_dir))
-      },
-      |f| existing_open.open(output_file(f, &args.out_dir)),
-    )?;
-    store(mp, &mut file)?;
   }
-  if !srm.sram.is_empty() {
-    let mut file = args.sra_file.map_or_else(
-      || open_opts.open(output_file(&input.with_extension("sra"), &args.out_dir)),
-      |f| existing_open.open(output_file(f, &args.out_dir)),
-    )?;
-    store(&srm.sram, &mut file)?;
+}
+
+impl SaveFile {
+  fn simple_name(&self) -> String {
+    if let Some(file_name) = self.path.file_stem() {
+      let mut name = file_name.to_string_lossy().to_string();
+      if name.ends_with(|c: char| c.is_digit(5)) {
+        name.pop();
+      }
+      name
+    } else {
+      "".to_owned()
+    }
   }
-  if !srm.flashram.is_empty() {
-    let mut file = args.fla_file.map_or_else(
-      || open_opts.open(output_file(&input.with_extension("fla"), &args.out_dir)),
-      |f| existing_open.open(output_file(f, &args.out_dir)),
-    )?;
-    store(&srm.flashram, &mut file)?;
-  }
-  Ok(())
 }
 
 #[derive(Parser)]
-#[clap(verbatim_doc_comment)]
+#[clap(verbatim_doc_comment, version)]
 /// A simple converter for Retroarch's Mupen64 core save files.
 ///
-/// It detects the save (based on its extension) and does the following:
-/// - .eep|.fla|.mpk*|.sav: groups based on the file names and creates and .srm file.
-/// - .srm                : extracts save data and creates .eep, .fla, .mpk*, .sav file(s).
+/// It (tries) to detect the save file and does one of the following:
+/// - .eep|.fla|*.mpk|.sav: group based on the file names and creates and .srm file.
+/// - .srm                : extract save data and creates .eep, .fla, .*.mpk, .sav file(s).
 struct MupenSrmConvert {
+  /// Sets the verbose output (1 time for error logs, 2 times for debug log)
+  #[clap(short, long, action = clap::ArgAction::Count)]
+  verbose: u8,
+
+  /// Logs to the specified file
+  #[clap(long, conflicts_with = "quiet", parse(from_os_str))]
+  log_file: Option<PathBuf>,
+
+  /// Set this to suppress all output
+  #[clap(short, long, conflicts_with = "verbose")]
+  quiet: bool,
+
   /// If set, the program can overwrite an existing filesystem files
   #[clap(long)]
   overwrite: bool,
@@ -252,140 +249,101 @@ struct MupenSrmConvert {
   #[clap(long, parse(from_os_str))]
   output_dir: Option<PathBuf>,
 
+  /// If set, the 4 memory pack files will be merged into one
+  #[clap(long)]
+  merge_mempacks: bool,
+
   /// The input file(s).
   /// It can be *.srm (to extract), or *.sra, *.fla, *.eep or *.mpk (to create, based on file name)
   #[clap(parse(from_os_str), min_values = 1, required = true)]
   files: Vec<PathBuf>,
 }
 
-fn run() -> io::Result<Vec<(String, std::io::Error)>> {
-  let args = MupenSrmConvert::parse();
-  let mut map = HashMap::<OsString, VecDeque<(PathBuf, SaveType)>>::new();
+fn main() -> io::Result<()> {
+  let mut args = MupenSrmConvert::parse();
+
+  let logger_builder = match args.verbose {
+    1 => LoggerBuilder::error(),
+    2 => LoggerBuilder::debug(),
+    _ => LoggerBuilder::info(),
+  };
+  let mut logger = match args.log_file {
+    Some(path) => OpenOptions::new()
+      .create(true)
+      .append(true)
+      .open(path)
+      .map_or_else(
+        |_| logger_builder.create(std::io::sink()),
+        |f| logger_builder.create(f),
+      ),
+    None => logger_builder.create(std::io::stdout()),
+  };
 
   // if there is out dir, check!
-  if let Some(out_dir) = args.output_dir.as_ref() {
-    if out_dir.exists() && !out_dir.is_dir() {
-      return Err(std::io::Error::new(
-        ErrorKind::Other,
-        "Output directory path is not a directory!",
-      ));
-    }
-    if !out_dir.exists() {
-      std::fs::create_dir_all(out_dir)?;
-    }
+  if let Some(out_dir) = args.output_dir.as_mut() {
+    out_dir.canonicalize()?;
+    std::fs::create_dir_all(&out_dir)?;
+    log!(d: logger, "Created output dir {:#?}", out_dir);
   }
 
-  for file in args.files.into_iter() {
-    if !file.exists() || !file.is_file() {
-      continue;
-    }
-
-    let save_type = if let Some(ext) = file.extension() {
-      Into::<SaveType>::into(ext)
-    } else {
-      continue;
-    };
-
-    // get the files vector
-    let vector = match save_type {
-      SaveType::UNSUPPORTED => continue,
-      SaveType::MPK => {
-        // remove last mempack digit, if any
-        file.file_stem().map(|name| {
-          let mut name = name.to_string_lossy().to_string();
-          if name.ends_with(|c: char| c.is_digit(5)) {
-            name.pop();
-          }
-          map.entry(name.into()).or_default()
-        })
+  // collect same-filename paths
+  let mut map = HashMap::<String, ConvertModeArgs>::new();
+  for path in args.files.into_iter() {
+    log!(d: logger, "Checking {:#?}", &path);
+    let save = match SaveFile::try_from(path) {
+      Ok(save_file) if save_file.save_type == SaveType::UNSUPPORTED => {
+        log!(logger, "Save file {:#?} not supported", save_file.path);
+        continue;
       }
-      _ => file
-        .file_stem()
-        .map(|name| map.entry(name.into()).or_default()),
+      Err(err) => {
+        log!(logger, "Error while getting save type: {err}");
+        continue;
+      }
+      Ok(save_file) => save_file,
     };
+    log!(d: logger, "File is a {:#?}", &save.save_type);
 
-    if let Some(v) = vector {
-      v.push_back((file, save_type));
-    }
+    // get the files vector and put the data
+    map
+      .entry(save.simple_name())
+      .or_insert_with(|| ConvertModeArgs::new(save.clone()))
+      .insert(save);
   }
 
+  // check that files where collected
   if map.len() == 0 {
-    return Err(std::io::Error::new(
-      ErrorKind::Other,
-      "Invalid input file(s)",
-    ));
+    return Err(io::Error::new(ErrorKind::Other, "Invalid input file(s)"));
   }
-
-  let mut file_errs = vec![];
-
-  let work_groups = map.len();
 
   // Now work per file name
-  for files in map.into_values() {
-    let (path, save_type) = files.front().unwrap();
-
-    let mut args = ConvertArgs {
-      overwrite: args.overwrite,
-      ..ConvertArgs::default()
-    };
-
-    let mut mpk_idx = 0;
-    for (file, sav_type) in &files {
-      match sav_type {
-        SaveType::EEP => args.eep_file = Some(file),
-        SaveType::FLA => args.fla_file = Some(file),
-        SaveType::MPK => {
-          args.mpk_files[mpk_idx] = Some(file);
-          mpk_idx += 1;
+  for (name, value) in map {
+    let ConvertModeArgs {
+      mode,
+      args: conv_args,
+    } = value;
+    log!(d: logger, "Convert {name} with {:?}", &conv_args);
+    if let Err(e) = match mode {
+      ConvertMode::Merge(output_file) => {
+        let mut output_path =
+          output_file.map_or_else(|| PathBuf::from(name).with_extension("srm"), |p| p);
+        if let Some(mut output_dir) = args.output_dir.clone() {
+          output_dir.push(output_path.file_name().unwrap());
+          output_path = output_dir;
         }
-        SaveType::SRA => args.sra_file = Some(file),
-        SaveType::SRM => args.srm_file = Some(file),
-        _ => unreachable!(),
+        create_srm(&mut logger, args.overwrite, conv_args, output_path)
       }
-    }
-
-    match match save_type {
-      SaveType::SRM => from_srm(args),
-      _ => {
-        let srm_path = path.with_extension("srm");
-        if args.srm_file.is_none() {
-          args.srm_file = Some(&srm_path);
-        }
-        to_srm(args)
-      }
+      ConvertMode::Split(input_path) => split_srm(
+        &mut logger,
+        args.overwrite,
+        args.output_dir.clone(),
+        args.merge_mempacks,
+        input_path,
+        conv_args,
+      ),
     } {
-      Ok(_) => {}
-      Err(error) => file_errs.push((
-        path.file_name().unwrap().to_str().unwrap().to_owned(),
-        error,
-      )),
+      log!(e: logger, "{e}");
     }
   }
 
-  if work_groups == file_errs.len() {
-    let mut msg = Vec::with_capacity(file_errs.len() + 1);
-    msg.push("Could not process any file!".to_owned());
-    for err in file_errs.into_iter() {
-      msg.push(format!("-  While working with '{}': {}", err.0, err.1));
-    }
-    Err(std::io::Error::new(ErrorKind::Other, msg.join("\n")))
-  } else {
-    Ok(file_errs)
-  }
-}
-
-fn main() {
-  match run() {
-    Ok(file_errs) => {
-      if !file_errs.is_empty() {
-        println!("ERROR: Some errors found while working");
-      }
-      for err in file_errs.into_iter() {
-        println!("ERROR: while working with '{}': {}", err.0, err.1)
-      }
-    }
-    Err(error) => {
-      write!(std::io::stderr(), "ERROR: {}", error).unwrap();
-    }
-  }
+  Ok(())
 }
