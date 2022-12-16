@@ -1,71 +1,67 @@
-use std::fs::OpenOptions;
-use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::fs::File;
+use std::io::{ErrorKind, Read, Write};
 
-use crate::logger::Logger;
+use rand_pcg::Pcg64Mcg;
+
 use crate::retroarch_srm::RetroArchSrm;
-use crate::{log, ConvertArgs, SingleMulti};
+use crate::{change_endianness, lerrln, linfln, BaseArgs, SrmPaths};
 
 macro_rules! read_battery {
-  ($l:expr; $opts:expr; ($($f:expr => $t:expr),+)) => {
-    $(if let Some(input) = $f.as_ref() {
-      if let Err(err) = $opts.open(&input).and_then(|mut f| f.read_exact($t.as_mut()))
-      {
-        log!(e: $l, "While loading save from {:#?}: {err}", input);
-      }
-    })+
-  };
+  ($file_opt:expr, $battery:expr) => {{
+    match $file_opt.as_mut() {
+      Some(Ok(file)) => file.read_exact($battery.as_mut()),
+      Some(Err(err)) => Ok(lerrln!("Could not read save: {err}")),
+      None => Ok(()),
+    }
+  }};
 }
 
-pub fn create_srm(
-  logger: &mut Logger,
-  overwrite: bool,
-  input: ConvertArgs,
-  output_path: PathBuf,
-) -> std::io::Result<()> {
+pub(crate) fn create_srm(mut args: BaseArgs, input: SrmPaths) -> std::io::Result<()> {
+  // check the output path
+  let output_path = match args.output_dir.take() {
+    Some(path) => path,
+    None => {
+      return Err(std::io::Error::new(
+        ErrorKind::Other,
+        "Output directory required to create an srm",
+      ))
+    }
+  };
+
   // here we should get the files to put into the srm
-  let mut srm = Box::new(RetroArchSrm::new());
-  srm.init();
+  let mut srm = Box::new(RetroArchSrm::new_init(Pcg64Mcg::new(rand::random())));
 
-  let mut load_opts = OpenOptions::new();
-  load_opts.read(true);
-
-  // setup now the save options in case the srm file exists, which we should update
-  let mut save_opts = OpenOptions::new();
-  save_opts
-    .create(overwrite)
-    .create_new(!overwrite)
-    .write(true);
-
-  // If the srm file exists, its update mode!
+  // If the srm file exists, read it first to update
   if output_path.is_file() {
-    load_opts
-      .open(&output_path)?
-      .read_exact(srm.as_mut().as_mut())?;
-    save_opts.create(true).create_new(false);
-    log!(logger, "Loaded existing SRM file {:#?}", output_path);
+    File::open(&output_path)?.read_exact(srm.as_mut().as_mut())?;
+    linfln!("Loaded existing SRM file {output_path:#?}");
   }
 
-  let input = &input;
-  read_battery!(logger; load_opts; (
-    input.eep_path => srm.eeprom,
-    input.sra_path => srm.sram,
-    input.fla_path => srm.flashram
-  ));
+  read_battery!(input.eep.as_ref().map(File::open), srm.eeprom)?;
+  read_battery!(input.sra.as_ref().map(File::open), srm.sram)?;
+  read_battery!(input.fla.as_ref().map(File::open), srm.flashram)?;
 
-  match &input.mpk_path {
-    SingleMulti::Empty => {}
-    SingleMulti::Single(mpk_path) => {
-      read_battery!(logger; load_opts; (Some(mpk_path) => srm.all_controller_packs_mut()));
+  if args.change_endianness {
+    change_endianness(srm.sram.as_mut());
+    change_endianness(srm.flashram.as_mut());
+  }
+
+  if args.merge_mempacks {
+    let cp_path = input.cp.into_iter().find(Option::is_some).flatten();
+    let mut cp_file = cp_path.map(File::open);
+    for i in 0..4 {
+      read_battery!(cp_file, srm.controller_pack[i])?;
     }
-    SingleMulti::Multiple(mpk_paths) => {
-      for (i, mpk_path) in mpk_paths.into_iter().enumerate() {
-        read_battery!(logger; load_opts; (mpk_path => srm.mempack[i]));
-      }
+  } else {
+    for (i, cp_path) in input.cp.into_iter().enumerate() {
+      read_battery!(cp_path.map(File::open), srm.controller_pack[i])?;
     }
   }
 
-  save_opts
+  File::options()
+    .create(args.overwrite)
+    .create_new(!args.overwrite)
+    .write(true)
     .open(&output_path)?
     .write_all(srm.as_ref().as_ref())
 }

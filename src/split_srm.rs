@@ -1,86 +1,76 @@
-use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use crate::logger::Logger;
 use crate::retroarch_srm::RetroArchSrm;
-use crate::{log, ConvertArgs, SingleMulti};
-
-struct SplitImpl<'a> {
-  logger: &'a mut Logger,
-  input_path: &'a Path,
-  output_dir: &'a Option<PathBuf>,
-}
-
-impl<'a> SplitImpl<'a> {
-  fn output_file<S: AsRef<OsStr>>(&self, extension: S) -> PathBuf {
-    let parent_path = self.output_dir.as_ref().map_or_else(
-      || {
-        self
-          .input_path
-          .parent()
-          .map_or_else(|| PathBuf::new(), |p| p.to_path_buf())
-      },
-      |d| d.clone(),
-    );
-    parent_path
-      .with_file_name(self.input_path.file_stem().unwrap())
-      .with_extension(extension)
-  }
-}
+use crate::{change_endianness, ldbgln, lerrln, BaseArgs, SrmPaths};
 
 macro_rules! write_battery {
-  ($a:ident; $oo:expr; ($($n:literal:$b:expr => $p:expr),+)) => {
-    $(if !$b.is_empty() {
-      let out_path = $p.take().unwrap_or_else(|| $a.output_file($n));
-      if let Err(err) = $oo.open(&out_path).and_then(|mut f| f.write_all($b.as_ref())) {
-        log!(e: $a.logger, "Could not store '{}' at {:#?}: {err}", $n, out_path);
+  ($battery:expr, $file:expr) => {{
+    if !$battery.is_empty() {
+      if let Err(err) = $file.as_mut().map(|f| f.write_all($battery.as_ref())) {
+        lerrln!("Could not store save: {err}");
       }
-    })+
-  };
+    }
+  }};
 }
 
-pub fn split_srm(
-  logger: &mut Logger,
-  overwrite: bool,
-  output_dir: Option<PathBuf>,
-  output_mupen_cp: bool,
+pub(crate) fn split_srm(
   input_path: PathBuf,
-  mut output: ConvertArgs,
+  args: &BaseArgs,
+  output: SrmPaths,
 ) -> std::io::Result<()> {
-  let mut srm = Box::from(RetroArchSrm::new());
-  File::open(&input_path)?.read_exact(AsMut::<[u8]>::as_mut(&mut *srm))?;
+  let input_path = std::fs::canonicalize(input_path).expect("SRM file should exist");
+  let mut srm = Box::<RetroArchSrm>::default();
+  File::open(&input_path)?.read_exact(srm.as_mut().as_mut())?;
 
-  let mut open_opts = OpenOptions::new();
-  open_opts
-    .create(overwrite)
-    .create_new(!overwrite)
+  // prepare out path
+  let mut new_file_base = args
+    .output_dir
+    .as_ref()
+    .map(|p| p.as_path())
+    .unwrap_or_else(|| input_path.parent().unwrap())
+    .to_path_buf();
+  new_file_base.push(input_path.file_stem().unwrap());
+  ldbgln!("Base name for new output files is {:?}", new_file_base);
+
+  if args.change_endianness {
+    change_endianness(srm.sram.as_mut());
+    change_endianness(srm.flashram.as_mut());
+  }
+
+  let mut opts = OpenOptions::new();
+  opts
+    .create(args.overwrite)
+    .create_new(!args.overwrite)
     .write(true);
 
-  let args = SplitImpl {
-    logger,
-    input_path: &input_path,
-    output_dir: &output_dir,
+  let open = |path, ext: &str| match path {
+    Some(path) => opts.open(path),
+    None => {
+      let path = new_file_base.with_extension(ext);
+      ldbgln!("Splitting to a new file {path:#?}");
+      opts.open(path)
+    }
   };
 
-  write_battery!(args; open_opts; (
-    "eep": srm.eeprom => output.eep_path,
-    "sra": srm.sram => output.sra_path,
-    "fla": srm.flashram => output.fla_path
-  ));
-  if output_mupen_cp {
-    write_battery!(args; open_opts; (
-      "mpk": srm.all_controller_packs() => output.mpk_path.take().single()
-    ))
-  } else if let SingleMulti::Multiple(v) = output.mpk_path.take() {
-    let mut iter = v.into_iter();
-    write_battery!(args; open_opts;(
-      "1.mpk": srm.mempack[0] => iter.next().flatten(),
-      "2.mpk": srm.mempack[1] => iter.next().flatten(),
-      "3.mpk": srm.mempack[2] => iter.next().flatten(),
-      "4.mpk": srm.mempack[3] => iter.next().flatten()
-    ));
+  write_battery!(srm.eeprom, open(output.eep.as_ref(), "eep"));
+  write_battery!(srm.sram, open(output.sra.as_ref(), "sra"));
+  write_battery!(srm.flashram, open(output.fla.as_ref(), "fla"));
+
+  if args.merge_mempacks {
+    let cp_path = output.cp.iter().find(|&p| Option::is_some(p)).unwrap();
+    let mut cp_file = open(cp_path.as_ref(), "mpk");
+    for i in 0..4 {
+      write_battery!(srm.controller_pack[i], cp_file);
+    }
+  } else {
+    for (i, path) in output.cp.iter().enumerate() {
+      write_battery!(
+        srm.controller_pack[i],
+        open(path.as_ref(), &format!("mpk{}", i + 1))
+      );
+    }
   }
 
   Ok(())

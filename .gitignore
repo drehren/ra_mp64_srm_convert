@@ -1,3 +1,5 @@
 /target
 .vs/
 .vscode/
+/tests/*data/*
+/tests/out/*

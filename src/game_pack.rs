@@ -1,11 +1,8 @@
 macro_rules! add_battery {
-  ($name:ident,$size:literal,$init:literal,$ext:literal,$st:pat) => {
-    pub struct $name([u8; $size]);
+  ($name:ident,$size:literal,$init:literal,$ext:literal) => {
+    pub(crate) struct $name([u8; $size]);
     impl $name {
-      pub fn new() -> Self {
-        Self([$init; $size])
-      }
-      pub fn is_empty(&self) -> bool {
+      pub(crate) fn is_empty(&self) -> bool {
         self.0.iter().rposition(|b| *b != $init) == None
       }
     }
@@ -19,9 +16,14 @@ macro_rules! add_battery {
         &mut self.0
       }
     }
+    impl Default for $name {
+      fn default() -> Self {
+        Self([$init; $size])
+      }
+    }
   };
 }
 
-add_battery!(Eeprom, 0x800, 0xff, "eep", SaveType::EEP);
-add_battery!(Sram, 0x8000, 0xff, "sra", SaveType::SRA);
-add_battery!(FlashRam, 0x20000, 0xff, "fla", SaveType::FLA);
+add_battery!(Eeprom, 0x800, 0x00, "eep");
+add_battery!(Sram, 0x8000, 0x00, "sra");
+add_battery!(FlashRam, 0x20000, 0xff, "fla");
