@@ -1,7 +1,7 @@
 use std::fmt::{Arguments, Display};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
-use crate::Verbosity;
+use super::Verbosity;
 
 static VERBOSITY: AtomicU8 = AtomicU8::new(0);
 pub(crate) fn get_verbosity() -> Verbosity {
