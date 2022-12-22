@@ -2,6 +2,7 @@
 
 use std::array::from_fn;
 use std::convert::TryInto;
+use std::fmt::Debug;
 use std::io::Read;
 use std::mem::size_of;
 use std::slice;
@@ -10,7 +11,7 @@ use rand::Rng;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub(crate) struct ControllerPack {
+pub struct ControllerPack {
   id_sector: IdSector,
   index_table: IndexTable,
   index_table_bkp: IndexTable,
@@ -34,7 +35,7 @@ impl ControllerPack {
   pub(crate) fn is_empty(&self) -> bool {
     const FREE_SPACE: u16 = u16::from_be_bytes([0, 3]);
     // check the index table, if all unallocated there is no prob
-    for v in self.index_table.inodes.windows(2) {
+    for v in self.index_table.inodes.chunks(2) {
       let val = u16::from_be_bytes(v.try_into().unwrap());
       if val != FREE_SPACE {
         return false;
@@ -50,10 +51,14 @@ impl ControllerPack {
     // now test the checksums
     Ok(id_sector.check())
   }
+
+  pub(crate) fn is_valid(&self) -> bool {
+    self.id_sector.check() && self.index_table.calculate_checksum() == self.index_table.checksum
+  }
 }
 
 impl AsRef<[u8]> for ControllerPack {
-  fn as_ref(&self) -> &[u8] {
+  fn as_ref<'a>(&'a self) -> &'a [u8] {
     const _: () = assert!(std::mem::align_of::<ControllerPack>() == 1);
     let ptr = self as *const _ as *const _;
     unsafe { slice::from_raw_parts(ptr, 0x8000) }
@@ -115,13 +120,13 @@ impl IdBlock {
     // summing the first fourteen 16-bit words in the structure
     // check against the checksum
     let sum1 = self.calculate_checksum1();
-    let sum2 = self.calculate_checksum2(sum1);
+    let sum2 = self.calculate_checksum2();
     return sum1 == self.checksum1 && sum2 == self.checksum2;
   }
 
   fn calculate_checksum1(&self) -> [u8; 2] {
     let mut sum = 0u16;
-    for data in self.serial.windows(2) {
+    for data in self.serial.chunks(2) {
       sum = sum.wrapping_add(u16::from_be_bytes(data.try_into().unwrap()));
     }
     sum = sum.wrapping_add(u16::from_be_bytes([self.unused1, self.dev_id]));
@@ -129,15 +134,15 @@ impl IdBlock {
     sum.to_be_bytes()
   }
 
-  fn calculate_checksum2(&self, checksum1: [u8; 2]) -> [u8; 2] {
+  fn calculate_checksum2(&self) -> [u8; 2] {
     u16::from_be_bytes([0xff, 0xf2])
-      .wrapping_sub(u16::from_be_bytes(checksum1))
+      .wrapping_sub(u16::from_be_bytes(self.checksum1))
       .to_be_bytes()
   }
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct IndexTable {
   unused1: u8,
   checksum: u8,
@@ -217,13 +222,43 @@ impl<R: Rng> ControllerPackInitializer<R> {
     id_block.bank_size = 1;
     id_block.unused2 = 0;
     id_block.checksum1 = id_block.calculate_checksum1();
-    id_block.checksum2 = id_block.calculate_checksum2(id_block.checksum2);
+    id_block.checksum2 = id_block.calculate_checksum2();
   }
 
   fn init_index_table(&mut self, table: &mut IndexTable) {
     table.unused1 = 0;
     table.checksum = 113; // 3 * 246 / 2 u8 wrapped
     table.unused2.fill(0);
-    table.inodes = from_fn(|i| (((i + 1) % 2) * 3) as u8);
+    table.inodes = from_fn(|i| ((i % 2) * 3) as u8);
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use rand_pcg::Pcg64Mcg;
+
+  use super::{ControllerPack, ControllerPackInitializer};
+
+  #[test]
+  fn init_pack() {
+    let mut cp = ControllerPack::default();
+
+    assert!(!cp.is_empty());
+
+    let mut pack_init = ControllerPackInitializer::from(Pcg64Mcg::new(rand::random()));
+
+    pack_init.init(&mut cp);
+
+    assert!(cp.is_empty());
+    assert_eq!(cp.index_table_bkp, cp.index_table);
+    assert_eq!(cp.index_table.checksum, cp.index_table.calculate_checksum());
+    assert_eq!(
+      cp.id_sector.id_block.checksum1,
+      cp.id_sector.id_block.calculate_checksum1()
+    );
+    assert_eq!(
+      cp.id_sector.id_block.checksum2,
+      cp.id_sector.id_block.calculate_checksum2()
+    );
   }
 }

@@ -34,6 +34,42 @@ fn change_endianness(buf: &mut [u8]) {
   }
 }
 
+struct OutputDir<'out, 'base> {
+  out_dir: &'out Option<PathBuf>,
+  base: &'base Path,
+}
+impl<'out, 'base> OutputDir<'out, 'base> {
+  fn new(out_dir: &'out Option<PathBuf>, base: &'base Path) -> Self {
+    Self { out_dir, base }
+  }
+
+  fn output_path<P>(&self, input: &P) -> PathBuf
+  where
+    P: AsRef<Path> + ?Sized,
+  {
+    let input = input.as_ref();
+    if input.is_absolute() {
+      return input.into();
+    }
+    let file_name = input.file_name().unwrap_or(&OsStr::new(""));
+    let mut path: PathBuf = if let Some(out_dir) = self.out_dir {
+      out_dir
+    } else {
+      self.base
+    }
+    .into();
+    path.push(file_name);
+    path
+  }
+
+  fn from_base<S>(&self, ext: &S) -> PathBuf
+  where
+    S: AsRef<OsStr> + ?Sized,
+  {
+    self.output_path(self.base.with_extension(ext).file_name().unwrap())
+  }
+}
+
 #[derive(PartialEq)]
 enum ConvertMode {
   Create(PathBuf),
@@ -395,6 +431,8 @@ fn main() -> ExitCode {
   }
   ldbgln!("\n--- Start Conversion ---");
 
+  let mut exit_code = ExitCode::SUCCESS;
+
   // Now work per file name
   for (name, value) in groups {
     let _pad0 = linfln!(>2 "Group \"{name}\":");
@@ -406,23 +444,15 @@ fn main() -> ExitCode {
 
     let _pad1 = linfln!(>2"{mode}, using: {paths}");
     if let Err(e) = match mode {
-      ConvertMode::Create(output_path) => {
-        let mut args = args.base.clone();
-        if let Some(output_dir) = args.output_dir.as_mut() {
-          // is safe to unwrap because the path has been validated
-          output_dir.push(output_path.file_name().unwrap());
-        } else {
-          args.output_dir = Some(output_path)
-        }
-        create_srm(args, paths)
-      }
+      ConvertMode::Create(output_path) => create_srm(output_path, &args.base, paths),
       ConvertMode::Split(input_path) => split_srm(input_path, &args.base, paths),
     } {
       lerrln!("{e}");
+      exit_code = ExitCode::FAILURE
     }
   }
 
-  ExitCode::SUCCESS
+  exit_code
 }
 
 fn validate(
