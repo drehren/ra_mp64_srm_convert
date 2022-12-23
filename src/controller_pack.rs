@@ -142,12 +142,22 @@ impl IdBlock {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct IndexTable {
   unused1: u8,
   checksum: u8,
   unused2: [u8; 8],
   inodes: [u8; 246],
+}
+impl Debug for IndexTable {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("IndexTable")
+      .field("unused1", &self.unused1)
+      .field("checksum", &self.checksum)
+      .field("unused2", &self.unused2)
+      //.field("inodes", &self.inodes)
+      .finish_non_exhaustive()
+  }
 }
 
 impl Default for IndexTable {
