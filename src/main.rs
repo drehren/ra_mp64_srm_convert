@@ -217,6 +217,12 @@ impl AddOpts {
   }
 }
 
+enum SaveFileChange {
+  Unchanged,
+  New,
+  Updated
+}
+
 #[derive(Debug, Default)]
 struct ConvertArgs {
   mode: Option<ConvertMode>,
@@ -224,35 +230,24 @@ struct ConvertArgs {
 }
 
 impl ConvertArgs {
-  fn check_mode(&mut self, path: PathBuf, opts: AddOpts) {
+  fn set_or_update_mode(&mut self, path: PathBuf, opts: AddOpts) {
     match opts {
-      AddOpts::ForcedCreate(_) => {
-        log_if_replaced!(self.mode, ConvertMode::Create(path))
-      }
-      AddOpts::ForcedSplit(_) => {
-        log_if_replaced!(self.mode, ConvertMode::Split(path))
-      }
-      AddOpts::Automatic(_) => match self.mode {
-        None if self.paths.is_empty() => {
-          self.mode = Some(ConvertMode::Split(path));
-          ldbgln!("Will be split");
-        }
-        None => {
-          self.mode = Some(ConvertMode::Create(path));
-          ldbgln!("Will be created/updated");
-        }
-        _ => ldbgln!("Will be skipped"),
+      AddOpts::ForcedCreate(_) => log_if_replaced!(self.mode, ConvertMode::Create(path)),
+      AddOpts::ForcedSplit(_) => log_if_replaced!(self.mode, ConvertMode::Split(path)),
+      AddOpts::Automatic(_) => match &mut self.mode {
+        Some(ConvertMode::Create(value) | ConvertMode::Split(value)) => *value = path,
+        None if self.paths.is_empty() => self.mode = Some(ConvertMode::Split(path)),
+        None => self.mode = Some(ConvertMode::Create(path)),
       },
     }
   }
 
   fn add(&mut self, path: PathBuf, opts: AddOpts) -> io::Result<()> {
-    let r = if path.exists() {
+    if path.exists() {
       self.add_from_data(path, opts)
     } else {
       self.add_from_ext(path, opts)
-    };
-    r
+    }
   }
 
   fn add_from_data(&mut self, path: PathBuf, opts: AddOpts) -> io::Result<()> {
@@ -291,7 +286,7 @@ impl ConvertArgs {
       // retroarch srm save size
       Ok(0x48800) => Ok({
         ldbg!("SRM (RA Mupen64Plus-Next) ");
-        self.check_mode(path, opts);
+        self.set_or_update_mode(path, opts);
       }),
       Ok(_) => Err(io::Error::new(ErrorKind::Other, "Unknown file")),
       _ => unreachable!(),
@@ -308,7 +303,7 @@ impl ConvertArgs {
     {
       Some("SRM") => Ok({
         ldbg!("SRM ");
-        self.check_mode(path, opts);
+        self.set_or_update_mode(path, opts);
       }),
       Some("SRA") => Ok({
         ldbg!("SRAM ");
@@ -345,15 +340,16 @@ impl Display for ConvertArgs {
   }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, clap::ValueEnum)]
+#[derive(Copy, Clone, Debug, PartialEq, clap::ValueEnum, Default)]
 #[repr(u8)]
 enum Verbosity {
   Quiet = 0,
+  #[default]
   Normal = 1,
   Debug = 2,
 }
 
-#[derive(Clone, clap::Args, Debug)]
+#[derive(Clone, clap::Args, Debug, Default)]
 struct BaseArgs {
   /// If set, the program will overwrite any existing files
   #[arg(long)]
@@ -373,7 +369,7 @@ struct BaseArgs {
 }
 
 /// A simple converter for Retroarch's Mupen64Plus core save files.
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Default)]
 #[command(version)]
 struct MupenSrmConvert {
   /// Sets the output verbosity
@@ -424,7 +420,10 @@ fn main() -> ExitCode {
     }
   }
 
-  let (mut groups, order) = group_files(&mut args);
+  // Get the files out from the arguments
+  let files = std::mem::replace(&mut args.files, Vec::new());
+
+  let (mut groups, order) = group_files(files, &args);
 
   if !validate(order, &mut groups, &args) {
     return ExitCode::FAILURE;
@@ -510,15 +509,16 @@ fn validate(
   !groups.is_empty()
 }
 
-fn group_files(args: &mut MupenSrmConvert) -> (HashMap<String, ConvertArgs>, Vec<String>) {
+fn group_files(
+  files: Vec<PathBuf>,
+  args: &MupenSrmConvert,
+) -> (HashMap<String, ConvertArgs>, Vec<String>) {
   let mut map = HashMap::<String, ConvertArgs>::new();
   ldbgln!("\n--- Grouping file(s) ---");
 
   let mut order = Vec::new();
 
   // collect files from arguments
-  let files = std::mem::replace(&mut args.files, Vec::new());
-
   for path in files.into_iter() {
     let mut _pad = ldbgln!(>2 "File {path:#?}:");
     if path.is_dir() {
@@ -574,11 +574,104 @@ fn group_files(args: &mut MupenSrmConvert) -> (HashMap<String, ConvertArgs>, Vec
 
 #[cfg(test)]
 mod tests {
-  use crate::MupenSrmConvert;
+  use crate::{group_files, ConvertMode, MupenSrmConvert};
 
   #[test]
   fn verify_cli() {
     use clap::CommandFactory;
     MupenSrmConvert::command().debug_assert()
   }
+
+  #[test]
+  fn verify_automatic_grouping() {
+    let args = MupenSrmConvert::default();
+    let files = vec![
+      "A.srm".into(),
+      "B.srm".into(),
+      "C.srm".into(),
+      "B1.eep".into(),
+      "B.mpk1".into(),
+      "D.fla".into(),
+      "D.srm".into(),
+      "folder/D.mpk".into(),
+    ];
+    let (map, order) = group_files(files, &args);
+
+    assert_eq!(order, vec!["A", "B", "C", "B1", "D"]);
+
+    // simple auto-name split
+    for key in ["A", "C"] {
+      assert_eq!(
+        map[key].mode,
+        Some(ConvertMode::Split(format!("{key}.srm").into()))
+      );
+      assert!(map[key].paths.is_empty());
+    }
+
+    // split to named mpk
+    assert_eq!(map["B"].mode, Some(ConvertMode::Split("B.srm".into())));
+    assert!(!map["B"].paths.is_empty());
+    assert_eq!(map["B"].paths.cp[0], Some("B.mpk1".into()));
+    assert_eq!(map["B"].paths.cp[1], None);
+    assert_eq!(map["B"].paths.cp[2], None);
+    assert_eq!(map["B"].paths.cp[3], None);
+    assert_eq!(map["B"].paths.sra, None);
+    assert_eq!(map["B"].paths.fla, None);
+    assert_eq!(map["B"].paths.eep, None);
+
+    // create from B1.eep, no srm given
+    assert_eq!(map["B1"].mode, None);
+    assert!(!map["B1"].paths.is_empty());
+    assert_eq!(map["B1"].paths.eep, Some("B1.eep".into()));
+    assert_eq!(map["B1"].paths.cp[0], None);
+    assert_eq!(map["B1"].paths.cp[1], None);
+    assert_eq!(map["B1"].paths.cp[2], None);
+    assert_eq!(map["B1"].paths.cp[3], None);
+    assert_eq!(map["B1"].paths.sra, None);
+    assert_eq!(map["B1"].paths.fla, None);
+
+    // create from D.fla & folder/D.mpk, to D.srm
+    assert_eq!(map["D"].mode, Some(ConvertMode::Create("D.srm".into())));
+    assert!(!map["D"].paths.is_empty());
+    assert_eq!(map["D"].paths.eep, None);
+    assert_eq!(map["D"].paths.cp[0], Some("folder/D.mpk".into()));
+    assert_eq!(map["D"].paths.cp[1], None);
+    assert_eq!(map["D"].paths.cp[2], None);
+    assert_eq!(map["D"].paths.cp[3], None);
+    assert_eq!(map["D"].paths.sra, None);
+    assert_eq!(map["D"].paths.fla, Some("D.fla".into()));
+  }
+
+  #[test]
+  fn verify_automatic_grouping_replacement() {
+    let args = MupenSrmConvert::default();
+    let files = vec![
+      "A.srm".into(),
+      "folder/A.srm".into(),
+      "folder2/A.srm".into(),
+    ];
+    let (map, order) = group_files(files, &args);
+
+    assert_eq!(order, vec!["A"]);
+    assert_eq!(
+      map["A"].mode,
+      Some(ConvertMode::Split("folder2/A.srm".into()))
+    );
+    assert!(map["A"].paths.is_empty());
+  }
+
+  #[test]
+  fn verify_create_grouping() {}
+
+  #[test]
+  fn verify_create_grouping_replacement() {}
+
+  #[test]
+  fn verify_split_grouping() {}
+
+  #[test]
+  fn verify_split_grouping_replacement() {}
+
+  #[test]
+  fn verify_validator() {}
 }

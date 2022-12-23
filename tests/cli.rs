@@ -73,7 +73,7 @@ enum SaveType {
   ControllerPack(usize),
   Sram(Endianness),
   Eeprom(usize),
-  //Srm,
+  Srm,
 }
 impl SaveType {
   fn name(&self) -> &str {
@@ -97,7 +97,7 @@ impl SaveType {
         16 => "eep_16k",
         _ => "eep_4k",
       },
-      //SaveType::Srm => "srm",
+      SaveType::Srm => "srm",
     }
   }
 
@@ -316,13 +316,82 @@ fn create_from_mpk4_test() -> TestResult<()> {
   run_test(&data, SaveType::ControllerPack(4))
 }
 
-// fn split_test(data: &DataPrepare, save_type: SaveType) -> TestResult<()> {
-//   todo!()
-// }
+fn split_test(data: &DataPrepare, save_type: SaveType) -> TestResult<()> {
+  let name = format!("{save_type}.srm");
 
-// #[test]
-// fn split_srm_eep_mpk_test() -> TestResult<()> {
-//   let data = DataPrepare::new()?;
-//   split_test(&data, SaveType::Srm)?;
-//   Ok(())
-// }
+  let mut cmd = Command::cargo_bin("ra_mp64_srm_convert")?;
+  let input_saves = data.get_saves(&save_type)?;
+
+  if save_type.is_big_endian() {
+    cmd.arg("--change-endianness");
+  }
+
+  if save_type == SaveType::MupenControllerPack {
+    cmd.arg("--merge-mempacks");
+  }
+
+  cmd
+    .current_dir(data.test_data_dir())
+    .arg("-c")
+    .arg(&name)
+    .args(&input_saves)
+    .args([PathBuf::from("--output-dir"), data.out_dir().to_path_buf()])
+    .assert()
+    .success();
+
+  // assert that the file is there
+  data
+    .out_dir()
+    .child(&name)
+    .assert(predicate::path::is_file());
+
+  // get the output names
+  let output_saves = input_saves
+    .iter()
+    .map(|p| p.file_name().unwrap().into())
+    .collect::<Vec<PathBuf>>();
+
+  // an srm should exist now... if we were to split this one, its contents should match the input
+  let mut cmd = Command::cargo_bin("ra_mp64_srm_convert")?;
+
+  if save_type.is_big_endian() {
+    cmd.arg("--change-endianness");
+  }
+
+  if save_type == SaveType::MupenControllerPack {
+    cmd.arg("--merge-mempacks");
+  }
+
+  cmd
+    .current_dir(data.test_data_dir())
+    .arg("-s")
+    .arg(data.out_dir().child(&name).to_path_buf())
+    .args(&output_saves)
+    .args([PathBuf::from("--output-dir"), data.out_dir().to_path_buf()])
+    .assert()
+    .success();
+
+  // assert that the file is out there...
+  for out_save in &output_saves {
+    data
+      .out_dir()
+      .child(out_save)
+      .assert(predicate::path::is_file());
+  }
+
+  // now compare input and output
+  for (input, output) in input_saves.iter().zip(&output_saves) {
+    data
+      .out_dir()
+      .child(output)
+      .assert(predicate::path::eq_file(input));
+  }
+
+  Ok(())
+}
+
+#[test]
+fn split_srm_eep_mpk_test() -> TestResult<()> {
+  let data = DataPrepare::new()?;
+  split_test(&data, SaveType::Srm)
+}
