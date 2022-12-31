@@ -12,7 +12,7 @@ $ ra_mp64_srm_convert A.srm B.mpk B.eep C.fla C.srm D.srm D.fla F.mpk1 F.mpk3
 ```
 
 Output:
-- A.eep A.sra A.fla A.mpk1 A.mpk2 A.mpk3 A.mpk4 (all new)
+- A.eep, A.sra or A.fla, and/or A.mpk1 A.mpk2 A.mpk3 A.mpk4 (all new)
 - B.srm (new)
 - C.srm (updated)
 - D.eep (updated) D.sra D.fla D.mpk1 D.mpk2 D.mpk3 D.mpk4 (all new)
@@ -153,7 +153,6 @@ Options:
       --overwrite                If set, the program will overwrite any existing files
       --change-endianness        Is set, any FlashRAM or SRAM data will swap its endianness
       --merge-mempacks           If set, the 4 memory pack files will be merged into one
-      --mempack-init             (Creation only) If set, the memory packs will be randomly initialized
       --output-dir <OUTPUT_DIR>  Sets the output directory for the created file (or files)
   -h, --help                     Print help information
   -V, --version                  Print version information

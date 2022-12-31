@@ -379,10 +379,6 @@ struct BaseArgs {
   #[arg(long)]
   merge_mempacks: bool,
 
-  /// (Creation only) If set, the memory packs will be randomly initialized
-  #[arg(long)]
-  mempack_init: bool,
-
   /// Sets the output directory for the created file (or files)
   #[arg(long)]
   output_dir: Option<PathBuf>,

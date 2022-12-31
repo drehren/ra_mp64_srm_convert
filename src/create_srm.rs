@@ -2,8 +2,6 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
-use rand_pcg::Pcg64Mcg;
-
 use crate::retroarch_srm::RetroArchSrm;
 use crate::{change_endianness, lerrln, linfln, BaseArgs, OutputDir, SrmPaths};
 
@@ -20,11 +18,7 @@ macro_rules! read_battery {
 pub(crate) fn create_srm(output_path: PathBuf, args: &BaseArgs, input: SrmPaths) -> io::Result<()> {
   // here we should get the files to put into the srm
 
-  let mut srm = Box::new(RetroArchSrm::new_init(if args.mempack_init {
-    Some(Pcg64Mcg::new(rand::random()))
-  } else {
-    None
-  }));
+  let mut srm = Box::new(RetroArchSrm::new_init());
 
   // If the srm file exists, read it first to update
   if output_path.is_file() {

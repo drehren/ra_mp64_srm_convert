@@ -13,8 +13,6 @@ categories = ["command-line-utilities"]
 
 [dependencies]
 clap = { version = "4.0", features = ["derive"] }
-rand = "0.8.5"
-rand_pcg = "0.3.1"
 
 [dev-dependencies]
 assert_cmd = "2.0.5"
