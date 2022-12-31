@@ -41,7 +41,7 @@ pub(crate) fn split_srm(input_path: PathBuf, args: &BaseArgs, output: SrmPaths) 
 
   if !srm.eeprom.is_empty() {
     // we need to figure out if this eep is 4k or 16k..
-    let is_16k = srm.eeprom.as_ref()[512..].iter().any(|b| b != &0);
+    let is_16k = srm.eeprom.as_ref()[512..].iter().any(|b| b != &0xff);
     if !is_16k {
       write_battery!(srm.eeprom.as_ref()[..512], open(output.eep.as_ref(), "eep"));
     } else {

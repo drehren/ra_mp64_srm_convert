@@ -19,7 +19,12 @@ macro_rules! read_battery {
 
 pub(crate) fn create_srm(output_path: PathBuf, args: &BaseArgs, input: SrmPaths) -> io::Result<()> {
   // here we should get the files to put into the srm
-  let mut srm = Box::new(RetroArchSrm::new_init(Pcg64Mcg::new(rand::random())));
+
+  let mut srm = Box::new(RetroArchSrm::new_init(if args.mempack_init {
+    Some(Pcg64Mcg::new(rand::random()))
+  } else {
+    None
+  }));
 
   // If the srm file exists, read it first to update
   if output_path.is_file() {

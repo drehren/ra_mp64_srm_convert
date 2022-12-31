@@ -20,7 +20,7 @@ pub(crate) fn set_verbosity(v: Verbosity) {
 
 static PADDING: AtomicUsize = AtomicUsize::new(0);
 pub fn add_padding(size: usize) {
-  PADDING.store(size, Ordering::Release);
+  PADDING.fetch_add(size, Ordering::AcqRel);
 }
 pub fn sub_padding(size: usize) {
   PADDING.fetch_sub(size, Ordering::AcqRel);
@@ -113,7 +113,7 @@ where
     None => fmt.not_displayed(),
   };
 
-  CAN_PAD.swap(true, Ordering::AcqRel);
+  let _ = CAN_PAD.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire);
   result
 }
 

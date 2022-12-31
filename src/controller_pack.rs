@@ -182,7 +182,7 @@ impl IndexTable {
 struct NoteTable([u8; 16 * 32]); // notes * note_size
 impl Default for NoteTable {
   fn default() -> Self {
-    Self([0u8; 16 * 32])
+    Self([0; 16 * 32])
   }
 }
 
@@ -195,13 +195,19 @@ impl Default for Page {
   }
 }
 
-pub(crate) struct ControllerPackInitializer<R: Rng>(R);
+#[derive(Default)]
+pub(crate) struct ControllerPackInitializer<R: Rng>(Option<R>);
 
-impl<R: Rng> From<R> for ControllerPackInitializer<R> {
-  fn from(rng: R) -> Self {
+impl<R: Rng> ControllerPackInitializer<R> {
+  pub(crate) fn new(rng: Option<R>) -> Self {
     Self(rng)
   }
 }
+
+const MUPEN64_SERIAL: [u8; 24] = [
+  0xff, 0xff, 0xff, 0xff, 0x05, 0x1a, 0x5f, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+];
 
 impl<R: Rng> ControllerPackInitializer<R> {
   pub(crate) fn init(&mut self, controller_pack: &mut ControllerPack) {
@@ -220,17 +226,28 @@ impl<R: Rng> ControllerPackInitializer<R> {
   }
 
   fn id_block_serial(&mut self, serial: &mut [u8; 24]) {
-    serial[0..=3].fill(0xff);
-    serial[4..=7].fill(0x30);
-    self.0.fill_bytes(&mut serial[8..]);
+    if let Some(rng) = &mut self.0 {
+      serial[0..=3].fill(0xff);
+      serial[4..=7].fill(0x30);
+      rng.fill_bytes(&mut serial[8..]);
+    } else {
+      *serial = MUPEN64_SERIAL;
+    }
   }
 
   fn init_id_block(&mut self, id_block: &mut IdBlock) {
     self.id_block_serial(&mut id_block.serial);
-    id_block.unused1 = 0;
-    id_block.dev_id = 1;
-    id_block.bank_size = 1;
-    id_block.unused2 = 0;
+    if self.0.is_some() {
+      id_block.unused1 = 0;
+      id_block.dev_id = 1;
+      id_block.bank_size = 1;
+      id_block.unused2 = 0;
+    } else {
+      id_block.unused1 = 0xff;
+      id_block.dev_id = 0xff;
+      id_block.bank_size = 1;
+      id_block.unused2 = 0xff;
+    }
     id_block.checksum1 = id_block.calculate_checksum1();
     id_block.checksum2 = id_block.calculate_checksum2();
   }
@@ -250,12 +267,12 @@ mod tests {
   use super::{ControllerPack, ControllerPackInitializer};
 
   #[test]
-  fn init_pack() {
+  fn init_random_pack() {
     let mut cp = ControllerPack::default();
 
     assert!(!cp.is_empty());
 
-    let mut pack_init = ControllerPackInitializer::from(Pcg64Mcg::new(rand::random()));
+    let mut pack_init = ControllerPackInitializer::new(Some(Pcg64Mcg::new(rand::random())));
 
     pack_init.init(&mut cp);
 

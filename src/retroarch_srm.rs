@@ -28,10 +28,10 @@ impl AsMut<[u8]> for RetroArchSrm {
 }
 
 impl RetroArchSrm {
-  pub fn new_init<R: Rng>(rng: R) -> Self {
+  pub fn new_init<R: Rng>(rng: Option<R>) -> Self {
     let mut me = Self::default();
 
-    let mut pack_init = ControllerPackInitializer::from(rng);
+    let mut pack_init = ControllerPackInitializer::new(rng);
     for pack in &mut me.controller_pack {
       pack_init.init(pack);
     }
@@ -72,7 +72,7 @@ mod tests {
 
   #[test]
   fn srm_init() {
-    let srm = RetroArchSrm::new_init(rand_pcg::Pcg64Mcg::new(rand::random()));
+    let srm = RetroArchSrm::new_init(Some(rand_pcg::Pcg64Mcg::new(rand::random())));
 
     assert!(srm.eeprom.is_empty());
     assert!(srm.sram.is_empty());

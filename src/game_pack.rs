@@ -3,7 +3,7 @@ macro_rules! add_battery {
     pub(crate) struct $name([u8; $size]);
     impl $name {
       pub(crate) fn is_empty(&self) -> bool {
-        self.0.iter().rposition(|b| *b != $init) == None
+        self.0.iter().rposition(|b| b != &$init) == None
       }
     }
     impl AsRef<[u8]> for $name {
@@ -24,6 +24,6 @@ macro_rules! add_battery {
   };
 }
 
-add_battery!(Eeprom, 0x800, 0x00, "eep");
-add_battery!(Sram, 0x8000, 0x00, "sra");
+add_battery!(Eeprom, 0x800, 0xff, "eep");
+add_battery!(Sram, 0x8000, 0xff, "sra");
 add_battery!(FlashRam, 0x20000, 0xff, "fla");
