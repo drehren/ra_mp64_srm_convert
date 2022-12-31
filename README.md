@@ -2,7 +2,7 @@
 
 A simple converter for Retroarch's Mupen64Plus core save files; from eep, mpk, sra or fla to srm (or viceversa).
 
-When a SRM file is split into its contents, only those with data will be exported
+When a SRM file is split into its contents, only those with data will be exported.
 
 ## Usage TL;DR
 
@@ -132,58 +132,37 @@ will split D.srm into B.eep, D.fla, F.mpk1, F.mpk3
 | FlashRAM  | *.fla                 | 128 KiB        |
 | Mempack   | *.mpk, *.mpk(1,2,3,4) |  32 KiB        |
 
-([Size source](http://micro-64.com/database/gamesave.shtml))
+[Size source](http://micro-64.com/database/gamesave.shtml)
 
 ## Usage
 
 To use it, simply drag and drop the file(s) into the program and it'll try to know what to do.
 
 ~~~~~~~
-A simple converter for Retroarch's Mupen64 core save files.
+A simple converter for Retroarch's Mupen64Plus core save files
 
-It (tries) to detect the save file and does one of the following:
-- .eep|.fla|.mpk|.mpk#|.mp#|.sav: group based on the file names and creates and .srm file.
-- .srm                          : extract save data and creates .eep, .fla, .*.mpk, .sav file(s).
-
-Usage: ra_mp64_srm_convert [OPTIONS] <FILE>...
+Usage: ra_mp64_srm_convert.exe [OPTIONS] <FILE>...
 
 Arguments:
-  <FILE>...
-          The input file(s). It can be *.srm (to extract), or *.sra, *.fla, *.eep or *.mpk (to create, based on file name)
+  <FILE>...  The input file(s)
 
 Options:
-  -v...
-          Sets the verbose output (1 time for error logs, 2 times for debug log)
-
-      --log-file <LOG_FILE>
-          Logs to the specified file
-
-  -q, --quiet
-          Set this to suppress all output
-
-      --overwrite
-          If set, the program can overwrite an existing filesystem files
-
-      --output-dir <OUTPUT_DIR>
-          Specify the output directory for the created file (or files)
-
-      --merge-mempacks
-          If set, the 4 memory packs will be merged into one
-
-      --change-endianness
-          Is set, any flashRAM or EEPROM data will swap its endianness
-
-  -h, --help
-          Print help information (use `-h` for a summary)
-
-  -V, --version
-          Print version information
+  -v, --verbosity <VERBOSITY>    Sets the output verbosity [default: normal] [possible values: quiet, normal, debug]
+  -c, --create-srm               Forces the creation of a SRM file from all the given files
+  -s, --split-srm                Forces the split of an existing SRM to all the given files
+      --overwrite                If set, the program will overwrite any existing files
+      --change-endianness        Is set, any FlashRAM or SRAM data will swap its endianness
+      --merge-mempacks           If set, the 4 memory pack files will be merged into one
+      --mempack-init             (Creation only) If set, the memory packs will be randomly initialized
+      --output-dir <OUTPUT_DIR>  Sets the output directory for the created file (or files)
+  -h, --help                     Print help information
+  -V, --version                  Print version information
 ~~~~~~~
 
 ## Building
 
 Requirements:
-* rust >= 1.63
+* rust >= 1.66
 
 Simply use ```cargo``` to build:
 
