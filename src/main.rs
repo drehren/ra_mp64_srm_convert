@@ -55,7 +55,7 @@ impl<'out, 'base> OutputDir<'out, 'base> {
     let mut path: PathBuf = if let Some(out_dir) = self.out_dir {
       out_dir
     } else {
-      self.base
+      self.base.parent().unwrap()
     }
     .into();
     path.push(file_name);
@@ -100,7 +100,7 @@ impl ConvertMode {
 impl Debug for ConvertMode {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     if f.alternate() {
-      return f.write_fmt(format_args!("{:#?}", self.get_path()));
+      return f.write_fmt(format_args!("{}", self.get_path().display()));
     }
     match self {
       Self::Create(path) => f.debug_tuple("Merge").field(path).finish(),
@@ -112,10 +112,11 @@ impl Debug for ConvertMode {
 impl Display for ConvertMode {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match &self {
-      ConvertMode::Create(path) if !path.exists() => f.write_fmt(format_args!("create {path:#?}")),
-      ConvertMode::Create(path) => f.write_fmt(format_args!("update {path:#?}")),
-      ConvertMode::Split(path) => f.write_fmt(format_args!("split {path:#?}")),
-    }
+      ConvertMode::Create(path) if !path.exists() => f.write_str("create "),
+      ConvertMode::Create(_) => f.write_str("update "),
+      ConvertMode::Split(_) => f.write_str("split "),
+    }?;
+    f.write_fmt(format_args!("{}", self.get_path().display()))
   }
 }
 
@@ -128,14 +129,13 @@ struct SrmPaths {
 }
 
 impl SrmPaths {
-  fn insert_or_update_cp(&mut self, merged: bool, path: PathBuf) -> SavedPath {
-    if merged {
+  fn insert_or_update_cp(&mut self, is_mupen: bool, path: PathBuf) -> SavedPath {
+    if is_mupen {
+      let _ = self.cp.split_first_mut().map(|(_, r)| r.fill(None));
       SavedPath::cp(CPKind::Mupen, self.cp[0].replace(path))
     } else {
-      let Some(i) = pack_number(&path).or_else(|| self.cp.iter().position(Option::is_none)) else {
-        return SavedPath::cp(if merged {CPKind::Mupen} else {CPKind::Player(1)}, None);
-      };
-      SavedPath::cp(CPKind::Player(i as u8 + 1), self.cp[i].replace(path))
+      let i = pack_number(&path).map_or(0, |i| i);
+      SavedPath::cp((i + 1).into(), self.cp[i].replace(path))
     }
   }
 
@@ -155,6 +155,33 @@ impl SrmPaths {
       || self.cp[2].as_ref().map_or(false, |p| p.is_file())
       || self.cp[3].as_ref().map_or(false, |p| p.is_file())
   }
+
+  fn get_invalid_paths(&self) -> Vec<&Path> {
+    let mut vec = Vec::new();
+    if let Some(p) = &self.eep {
+      if !p.is_file() {
+        vec.push(p.as_path());
+      }
+    }
+    if let Some(p) = &self.fla {
+      if !p.is_file() {
+        vec.push(p.as_path());
+      }
+    }
+    if let Some(p) = &self.sra {
+      if !p.is_file() {
+        vec.push(p.as_path());
+      }
+    }
+    for p in &self.cp {
+      if let Some(p) = p {
+        if !p.is_file() {
+          vec.push(p.as_path())
+        }
+      }
+    }
+    vec
+  }
 }
 
 macro_rules! display_some_path {
@@ -163,7 +190,7 @@ macro_rules! display_some_path {
       if $c > 0 {
         $f.write_str(" and ")?;
       }
-      $f.write_fmt(format_args!("{} ({path:#?})", $name))?;
+      $f.write_fmt(format_args!("{} ({})", $name, path.display()))?;
       $c += 1;
     }
   };
@@ -175,8 +202,17 @@ impl Display for SrmPaths {
     display_some_path!(counter, f, "EEPROM", &self.eep);
     display_some_path!(counter, f, "SRAM", &self.sra);
     display_some_path!(counter, f, "FlashRAM", &self.fla);
-    for i in 1..=4 {
-      display_some_path!(counter, f, format!("Controller Pack {i}"), &self.cp[i - 1]);
+    if !f.alternate() {
+      for i in 1..=4 {
+        display_some_path!(counter, f, format!("Controller Pack {i}"), &self.cp[i - 1]);
+      }
+    } else {
+      if let Some(path) = &self.cp[0] {
+        if counter > 0 {
+          f.write_str(" and ")?;
+        }
+        f.write_fmt(format_args!("Controller Pack ({})", path.display()))?;
+      }
     }
     Ok(())
   }
@@ -189,11 +225,9 @@ enum AddOpts {
 }
 
 impl AddOpts {
-  fn merged(&self) -> bool {
+  fn is_mupen(&self) -> bool {
     match self {
-      AddOpts::ForcedCreate(merged) => *merged,
-      AddOpts::ForcedSplit(merged) => *merged,
-      AddOpts::Automatic(merged) => *merged,
+      Self::ForcedCreate(m) | Self::ForcedSplit(m) | Self::Automatic(m) => *m,
     }
   }
 }
@@ -204,11 +238,29 @@ struct ConvertArgs {
   paths: SrmPaths,
 }
 
+#[repr(i32)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum CPKind {
-  Player(u8),
+  Player1,
+  Player2,
+  Player3,
+  Player4,
   Mupen,
 }
 
+impl From<usize> for CPKind {
+  fn from(value: usize) -> Self {
+    match value {
+      1 => Self::Player1,
+      2 => Self::Player2,
+      3 => Self::Player3,
+      4 => Self::Player4,
+      _ => Self::Mupen,
+    }
+  }
+}
+
+#[derive(Debug, PartialEq, Eq)]
 enum SaveType {
   Eeprom,
   Sram,
@@ -224,8 +276,8 @@ impl Display for SaveType {
       SaveType::Sram => f.write_str("SRAM"),
       SaveType::FlashRam => f.write_str("FlashRAM"),
       SaveType::ControllerPack(CPKind::Mupen) => f.write_str("Mupen Controller Pack"),
-      SaveType::ControllerPack(CPKind::Player(n)) => {
-        f.write_fmt(format_args!("Controller Pack {n}"))
+      SaveType::ControllerPack(player) => {
+        f.write_fmt(format_args!("Controller Pack {}", { *player as i32 + 1 }))
       }
       SaveType::Srm => f.write_str("SRM"),
     }
@@ -293,7 +345,7 @@ impl ConvertArgs {
       // 256Kbit sram or controller pack
       Ok(0x8000) => if_controller_pack!(
         path,
-        { self.paths.insert_or_update_cp(opts.merged(), path) },
+        { self.paths.insert_or_update_cp(opts.is_mupen(), path) },
         { SavedPath::sram(self.paths.sra.replace(path)) }
       ),
       // 1Mbit flash ram or 4 merged controller packs
@@ -318,26 +370,9 @@ impl ConvertArgs {
       Some("SRA") => Ok(SavedPath::sram(self.paths.sra.replace(path))),
       Some("FLA") => Ok(SavedPath::fla(self.paths.fla.replace(path))),
       Some("EEP") => Ok(SavedPath::eep(self.paths.eep.replace(path))),
-      Some("MPK" | "MPK1") => Ok(SavedPath::cp(
-        if opts.merged() {
-          CPKind::Mupen
-        } else {
-          CPKind::Player(1)
-        },
-        self.paths.cp[0].replace(path),
-      )),
-      Some("MPK2") => Ok(SavedPath::cp(
-        CPKind::Player(2),
-        self.paths.cp[1].replace(path),
-      )),
-      Some("MPK3") => Ok(SavedPath::cp(
-        CPKind::Player(3),
-        self.paths.cp[2].replace(path),
-      )),
-      Some("MPK4") => Ok(SavedPath::cp(
-        CPKind::Player(4),
-        self.paths.cp[3].replace(path),
-      )),
+      Some("MPK" | "MPK1" | "MPK2" | "MPK3" | "MPK4") => {
+        Ok(self.paths.insert_or_update_cp(opts.is_mupen(), path))
+      }
       _ => Err(io::Error::new(ErrorKind::Other, "Unknown extension")),
     }
   }
@@ -427,7 +462,7 @@ fn main() -> ExitCode {
   if let Some(out_dir) = args.base.output_dir.as_ref() {
     if !out_dir.is_dir() && !out_dir.exists() {
       match fs::create_dir_all(&out_dir) {
-        Ok(()) => ldbgln!("Created output directory at: {:#?}", out_dir.display()),
+        Ok(()) => ldbgln!("Created output directory at: {}", out_dir.display()),
         Err(err) => {
           lerrln!("Could not create output directory: {err}");
           return ExitCode::FAILURE;
@@ -456,26 +491,34 @@ fn main() -> ExitCode {
   let invalid_groups = validate(&groups);
   if !invalid_groups.is_empty() {
     ldbgln!("Validation failed");
-    for InvalidEntry { name, reason, dbg } in invalid_groups {
+    for InvalidEntry { name, reason } in invalid_groups {
       match reason {
         InvalidReason::NoMode => lerrln!("Group \"{name}\": No SRM file found"),
         InvalidReason::Create(problem) => match problem {
-          Problem::NoInput => lerrln!("Group \"{name}\": Can't create SRM: no input file(s)"),
-          Problem::FileDoesNotExist => {
-            lerrln!("Group \"{name}\": Can't create SRM: input file(s) do not exist");
+          Problem::NoInput => lerrln!("Group \"{name}\": Can't create SRM: no input files"),
+          Problem::FileDoesNotExist(files) => {
+            lerrln!("Group \"{name}\": Can't create SRM: the following file(s) do not exist");
+            for f in files {
+              lerrln!("  {}", f.display());
+            }
           }
-          Problem::NotAFile => unreachable!(),
+          Problem::NotAFile(_) => unreachable!(),
         },
         InvalidReason::Split(problem) => match problem {
           Problem::NoInput => unreachable!(),
-          Problem::FileDoesNotExist => {
-            lerrln!("Group \"{name}\":Can't split SRM: srm file doesn't exist")
+          Problem::FileDoesNotExist(files) => {
+            lerrln!(
+              "Group \"{name}\": Can't split SRM: {} doesn't exist",
+              files[0].display()
+            )
           }
-          Problem::NotAFile => lerrln!("Group \"{name}\":Can't split SRM: srm path is not a file"),
+          Problem::NotAFile(file) => {
+            lerrln!(
+              "Group \"{name}\": Can't split SRM: {} is not a file",
+              file.display()
+            )
+          }
         },
-      }
-      if let Some(dbg) = dbg {
-        ldbgln!("  {dbg}");
       }
     }
 
@@ -497,20 +540,31 @@ fn main() -> ExitCode {
     let mode = mode.unwrap(); // safe because it was validated
 
     let _pad1 = linf!(>2"{mode}");
+    let mode_str = format!("{mode}");
     if let Err(e) = match mode {
       ConvertMode::Create(output_path) => {
-        linfln!(": using: {paths}");
+        linf!(" using: ");
+        if args.base.merge_mempacks {
+          linfln!("{paths:#}")
+        } else {
+          linfln!("{paths}")
+        };
         create_srm(output_path, &args.base, paths)
       }
       ConvertMode::Split(input_path) => {
         if paths.any_is_file() {
-          linf!(": into: {paths}")
+          linf!(" into: ");
+          if args.base.merge_mempacks {
+            linf!("{paths:#}")
+          } else {
+            linf!("{paths}")
+          };
         }
         linfln!();
         split_srm(input_path, &args.base, paths)
       }
     } {
-      lerrln!("{e}");
+      lerrln!("Could not {mode_str}: {e}");
       exit_code = ExitCode::FAILURE
     }
   }
@@ -518,31 +572,56 @@ fn main() -> ExitCode {
   exit_code
 }
 
-enum Problem {
+#[derive(Debug)]
+struct PathError(PathBuf, io::Error);
+impl Display for PathError {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    let PathError(path, err) = self;
+    match err.kind() {
+      ErrorKind::NotFound => f.write_fmt(format_args!("file {} not found", path.display())),
+      ErrorKind::PermissionDenied => {
+        f.write_fmt(format_args!("could not access {}", path.display()))
+      }
+      ErrorKind::AlreadyExists => {
+        f.write_fmt(format_args!("will overwrite existing {}", path.display()))
+      }
+      ErrorKind::WriteZero => f.write_fmt(format_args!(
+        "could not write all data into {}",
+        path.display()
+      )),
+      ErrorKind::UnexpectedEof => f.write_fmt(format_args!(
+        "unexpected end of file while reading {}",
+        path.display()
+      )),
+      _ => f.write_fmt(format_args!("{err} with {}", path.display())),
+    }
+  }
+}
+impl std::error::Error for PathError {}
+type Result = std::result::Result<(), PathError>;
+
+#[derive(Debug, PartialEq, Eq)]
+enum Problem<'k> {
   NoInput,
-  FileDoesNotExist,
-  NotAFile,
+  FileDoesNotExist(Vec<&'k Path>),
+  NotAFile(&'k Path),
 }
 
-enum InvalidReason {
+#[derive(Debug, PartialEq, Eq)]
+enum InvalidReason<'k> {
   NoMode,
-  Create(Problem),
-  Split(Problem),
+  Create(Problem<'k>),
+  Split(Problem<'k>),
 }
 
 struct InvalidEntry<'key> {
   name: &'key str,
-  reason: InvalidReason,
-  dbg: Option<String>,
+  reason: InvalidReason<'key>,
 }
 
 impl<'k> InvalidEntry<'k> {
-  fn new(name: &'k str, reason: InvalidReason) -> Self {
-    Self {
-      name,
-      reason,
-      dbg: None,
-    }
+  fn new(name: &'k str, reason: InvalidReason<'k>) -> Self {
+    Self { name, reason }
   }
 }
 
@@ -558,17 +637,16 @@ fn validate<'g>(groups: &'g GroupedFiles) -> Vec<InvalidEntry<'g>> {
           invalid_groups.push(InvalidEntry::new(name, Create(NoInput)));
         } else if !value.paths.any_is_file() {
           invalid_groups.push({
-            let mut reason = InvalidEntry::new(name, Create(FileDoesNotExist));
-            reason.dbg = Some(format!("Input files: {}", value.paths));
-            reason
+            let files = value.paths.get_invalid_paths();
+            InvalidEntry::new(name, Create(FileDoesNotExist(files)))
           });
         }
       }
       Some(ConvertMode::Split(path)) => {
         if !path.exists() {
-          invalid_groups.push(InvalidEntry::new(name, Split(FileDoesNotExist)))
+          invalid_groups.push(InvalidEntry::new(name, Split(FileDoesNotExist(vec![path]))))
         } else if !path.is_file() {
-          invalid_groups.push(InvalidEntry::new(name, Split(NotAFile)))
+          invalid_groups.push(InvalidEntry::new(name, Split(NotAFile(path))))
         }
       }
       None => invalid_groups.push(InvalidEntry::new(name, NoMode)),
@@ -616,16 +694,16 @@ fn group_files(files: Vec<PathBuf>, args: &MupenSrmConvert) -> GroupedFiles {
 
   // collect files from arguments
   for path in files.into_iter() {
-    let mut _pad = ldbgln!(>2 "File {path:#?}:");
+    let mut _pad = ldbgln!(>2 "File {}:", path.display());
     if path.is_dir() {
-      lwarnln!("Path {path:#?} is a directory");
+      lwarnln!("Path {} is a directory", path.display());
       continue;
     }
     ldbg!("Getting name...");
     let name = match path.file_stem().and_then(OsStr::to_str) {
       Some(name) => name,
       None => {
-        lwarnln!("Path {path:#?} did not name a file");
+        lwarnln!("Path {} did not name a file", path.display());
         continue;
       }
     };
@@ -686,7 +764,12 @@ fn group_files(files: Vec<PathBuf>, args: &MupenSrmConvert) -> GroupedFiles {
 
 #[cfg(test)]
 mod tests {
-  use crate::{group_files, ConvertMode, GroupedFiles, MupenSrmConvert, SrmPaths};
+  use std::path::Path;
+
+  use crate::{
+    group_files, validate, AddOpts, CPKind, ConvertArgs, ConvertMode, GroupedFiles, InvalidReason,
+    MupenSrmConvert, Problem, SaveType, SrmPaths,
+  };
 
   type SaveFlag = u8;
   const EEP: SaveFlag = 0x1;
@@ -913,5 +996,145 @@ mod tests {
   }
 
   #[test]
-  fn verify_validator() {}
+  fn verify_convert_args() -> std::io::Result<()> {
+    let mut args = ConvertArgs::default();
+
+    assert_eq!(args.mode, None);
+    assert!(args.paths.is_empty());
+
+    // test first srm add
+    let save_path = args.add("A.srm".into(), &AddOpts::Automatic(false))?;
+    assert_eq!(save_path.0, SaveType::Srm);
+    assert_eq!(save_path.1, None);
+
+    assert_eq!(args.mode, Some(ConvertMode::Split("A.srm".into())));
+    assert!(args.paths.is_empty());
+
+    // test replace srm
+    let save_path = args.add("B.srm".into(), &AddOpts::Automatic(false))?;
+    assert_eq!(save_path.0, SaveType::Srm);
+    assert_eq!(save_path.1, Some("A.srm".into()));
+
+    assert_eq!(args.mode, Some(ConvertMode::Split("B.srm".into())));
+    assert!(args.paths.is_empty());
+
+    // test non-srm on empty
+    std::mem::take(&mut args);
+    assert_eq!(args.mode, None);
+    assert!(args.paths.is_empty());
+
+    let save_path = args.add("A.mpk".into(), &AddOpts::Automatic(false))?;
+    assert_eq!(save_path.0, SaveType::ControllerPack(CPKind::Player1));
+    assert_eq!(save_path.1, None);
+
+    assert_eq!(args.mode, None);
+    assert!(!args.paths.is_empty());
+    test_for_none(&args.paths, ALL & !CP1);
+
+    // test replace mkp1
+    let save_path = args.add("B.mpk1".into(), &AddOpts::Automatic(false))?;
+    assert_eq!(save_path.0, SaveType::ControllerPack(CPKind::Player1));
+    assert_eq!(save_path.1, Some("A.mpk".into()));
+
+    assert_eq!(args.mode, None);
+    assert!(!args.paths.is_empty());
+    test_for_none(&args.paths, ALL & !CP1);
+
+    // test add mpk3
+    let save_path = args.add("X.mpk3".into(), &AddOpts::Automatic(false))?;
+    assert_eq!(save_path.0, SaveType::ControllerPack(CPKind::Player3));
+    assert_eq!(save_path.1, None);
+
+    assert_eq!(args.mode, None);
+    assert!(!args.paths.is_empty());
+    test_for_none(&args.paths, ALL & !CP1 & !CP3);
+
+    // test add srm after file
+    let save_path = args.add("A.srm".into(), &AddOpts::Automatic(false))?;
+    assert_eq!(save_path.0, SaveType::Srm);
+    assert_eq!(save_path.1, None);
+
+    assert_eq!(args.mode, Some(ConvertMode::Create("A.srm".into())));
+    assert!(!args.paths.is_empty());
+    test_for_none(&args.paths, ALL & !CP1 & !CP3);
+
+    // test replace with mupen mpk
+    let save_path = args.add("M.mpk4".into(), &AddOpts::Automatic(true))?;
+    assert_eq!(save_path.0, SaveType::ControllerPack(CPKind::Mupen));
+    assert_eq!(save_path.1, Some("B.mpk1".into()));
+
+    assert_eq!(args.mode, Some(ConvertMode::Create("A.srm".into())));
+    assert!(!args.paths.is_empty());
+    test_for_none(&args.paths, ALL & !CP1);
+
+    // reset
+    std::mem::take(&mut args);
+    assert_eq!(args.mode, None);
+
+    // test forced create/split replacement
+    let save_path = args.add("A.srm".into(), &AddOpts::ForcedCreate(false))?;
+    assert_eq!(save_path.0, SaveType::Srm);
+    assert_eq!(save_path.1, None);
+
+    assert_eq!(args.mode, Some(ConvertMode::Create("A.srm".into())));
+    assert!(args.paths.is_empty());
+
+    let save_path = args.add("B.srm".into(), &AddOpts::ForcedSplit(false))?;
+    assert_eq!(save_path.0, SaveType::Srm);
+    assert_eq!(save_path.1, Some("A.srm".into()));
+
+    assert_eq!(args.mode, Some(ConvertMode::Split("B.srm".into())));
+    assert!(args.paths.is_empty());
+
+    let save_path = args.add("A.srm".into(), &AddOpts::ForcedCreate(false))?;
+    assert_eq!(save_path.0, SaveType::Srm);
+    assert_eq!(save_path.1, Some("B.srm".into()));
+
+    assert_eq!(args.mode, Some(ConvertMode::Create("A.srm".into())));
+    assert!(args.paths.is_empty());
+
+    // An auto should only change the path
+    let save_path = args.add("B.srm".into(), &AddOpts::Automatic(false))?;
+    assert_eq!(save_path.0, SaveType::Srm);
+    assert_eq!(save_path.1, Some("A.srm".into()));
+
+    assert_eq!(args.mode, Some(ConvertMode::Create("B.srm".into())));
+    assert!(args.paths.is_empty());
+
+    Ok(())
+  }
+
+  #[test]
+  fn verify_validator() -> std::io::Result<()> {
+    let mut groups = GroupedFiles(vec![("A".into(), ConvertArgs::default())]);
+
+    let invalids = validate(&groups);
+
+    assert!(!invalids.is_empty());
+    assert_eq!(invalids[0].name, "A");
+    assert_eq!(invalids[0].reason, InvalidReason::NoMode);
+
+    groups.0[0]
+      .1
+      .add("A.srm".into(), &AddOpts::Automatic(false))?;
+
+    let invalids = validate(&groups);
+    assert!(!invalids.is_empty());
+    assert_eq!(invalids[0].name, "A");
+    assert_eq!(
+      invalids[0].reason,
+      InvalidReason::Split(Problem::FileDoesNotExist(vec![&Path::new("A.srm")]))
+    );
+    std::mem::take(&mut groups.0[0].1);
+
+    groups.0[0]
+      .1
+      .add("A.mpk".into(), &AddOpts::Automatic(false))?;
+    let invalids = validate(&groups);
+    assert!(!invalids.is_empty());
+    assert_eq!(invalids[0].name, "A");
+    assert_eq!(invalids[0].reason, InvalidReason::NoMode);
+
+    Ok(())
+  }
 }

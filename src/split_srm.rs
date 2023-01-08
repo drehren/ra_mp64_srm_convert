@@ -1,81 +1,74 @@
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{Read, Write};
 use std::path::PathBuf;
 
 use crate::retroarch_srm::RetroArchSrm;
-use crate::{change_endianness, ldbgln, lerrln, BaseArgs, OutputDir, SrmPaths};
+use crate::{change_endianness, BaseArgs, OutputDir, PathError, Result, SrmPaths};
 
-macro_rules! write_battery {
-  ($battery:expr, $file:expr) => {{
-    if let Err(err) = $file.as_mut().map(|f| f.write_all($battery.as_ref())) {
-      lerrln!("Could not store save: {err}");
-    }
+macro_rules! open_write_battery {
+  ($path:expr, $ext:expr, $battery:expr, $out_dir:expr, $opts:expr) => {{
+    let path = $path.map_or_else(|| $out_dir.from_base($ext), |p| $out_dir.output_path(&p));
+    $opts
+      .open(&path)
+      .and_then(|mut f| f.write_all($battery.as_ref()))
+      .or_else(|e| Err(PathError(path, e)))
   }};
 }
 
-pub(crate) fn split_srm(input_path: PathBuf, args: &BaseArgs, output: SrmPaths) -> io::Result<()> {
-  let input_path = std::fs::canonicalize(input_path).expect("SRM file should exist");
+pub(crate) fn split_srm(input_path: PathBuf, args: &BaseArgs, output: SrmPaths) -> Result {
   let mut srm = Box::<RetroArchSrm>::default();
-  File::open(&input_path)?.read_exact(srm.as_mut().as_mut())?;
+  File::open(&input_path)
+    .and_then(|mut f| f.read_exact(srm.as_mut().as_mut()))
+    .or_else(|e| Err(PathError(input_path.clone(), e)))?;
 
-  let out_dir = OutputDir::new(&args.output_dir, &input_path);
   if args.change_endianness {
     change_endianness(srm.sram.as_mut());
     change_endianness(srm.flashram.as_mut());
   }
 
+  let out_dir = OutputDir::new(&args.output_dir, &input_path);
   let mut opts = OpenOptions::new();
   opts
     .create(args.overwrite)
     .create_new(!args.overwrite)
     .write(true);
 
-  let open = |path, ext: &str| match path {
-    Some(path) => opts.open(out_dir.output_path(path)),
-    None => {
-      let path = out_dir.from_base(ext);
-      ldbgln!("Splitting to a new file {path:#?}");
-      opts.open(path)
-    }
-  };
-
   if !srm.eeprom.is_empty() {
     // we need to figure out if this eep is 4k or 16k..
-    let is_16k = srm.eeprom.as_ref()[512..].iter().any(|b| b != &0xff);
-    if !is_16k {
-      write_battery!(srm.eeprom.as_ref()[..512], open(output.eep.as_ref(), "eep"));
+    if srm.eeprom.as_ref()[512..].iter().all(|b| b == &0xff) {
+      open_write_battery!(output.eep, "eep", srm.eeprom.as_mut()[..512], out_dir, opts)?;
     } else {
-      write_battery!(srm.eeprom, open(output.eep.as_ref(), "eep"));
+      open_write_battery!(output.eep.as_ref(), "eep", srm.eeprom, out_dir, opts)?;
     }
   }
 
   if !srm.sram.is_empty() {
-    write_battery!(srm.sram, open(output.sra.as_ref(), "sra"));
+    open_write_battery!(output.sra.as_ref(), "sra", srm.sram, out_dir, opts)?;
   }
 
   if !srm.flashram.is_empty() {
-    write_battery!(srm.flashram, open(output.fla.as_ref(), "fla"));
+    open_write_battery!(output.fla.as_ref(), "fla", srm.flashram, out_dir, opts)?;
   }
 
   if args.merge_mempacks {
     if srm.controller_pack.iter().any(|cp| !cp.is_empty()) {
-      let cp_path = output.cp.iter().find(|&p| Option::is_some(p)).unwrap();
-      let mut cp_file = open(cp_path.as_ref(), "mpk");
-      let data = srm
-        .controller_pack
-        .iter()
-        .map(|cp| cp.as_ref())
-        .collect::<Vec<_>>()
-        .concat();
-      write_battery!(data, cp_file);
+      let [path, _, _, _] = output.cp;
+      let path = path.map_or_else(|| out_dir.from_base("mpk"), |p| out_dir.output_path(&p));
+      opts
+        .open(&path)
+        .and_then(|mut f| {
+          for cp in &srm.controller_pack {
+            f.write_all(cp.as_ref())?
+          }
+          Ok(())
+        })
+        .or_else(|e| Err(PathError(path, e)))?;
     }
   } else {
-    for (i, path) in output.cp.iter().enumerate() {
+    for (i, path) in output.cp.into_iter().enumerate() {
       if !srm.controller_pack[i].is_empty() {
-        write_battery!(
-          srm.controller_pack[i],
-          open(path.as_ref(), &format!("mpk{}", i + 1))
-        );
+        let ext = &format!("mpk{}", i + 1);
+        open_write_battery!(path, ext, srm.controller_pack[i], out_dir, opts)?;
       }
     }
   }

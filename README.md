@@ -68,6 +68,8 @@ Given a set of input files, the program will:
     - New files will be created; existing files will overwritten only --overwrite was present
   - If the file is not an RA Mupen64Plus save, then a new RA Mupen64Plus save will be created
     - The contents will be from this first file and all others in the group
+3. Create the new file(s).
+  - If there are existing files, the group will fail at that point unless ```--overwrite``` is set
 
 ### Automatic mode:
 
@@ -76,14 +78,14 @@ proceed to create SRM or split based on the type of the first file of the group.
 
 For example
 ```sh
-$ ra_mp64_srm_convert A.srm B.mpk B.eep C.fla C.srm D.srm D.fla F.mpk1 F.mpk3
+$ ra_mp64_srm_convert A.srm B.mpk B.eep C.fla C.srm D.srm D.sra F.mpk1 F.mpk3
 ```
-will output the following (in the directory of the the first file for each group):
+will output the following:
 * A.srm -> A.eep, A.mpk1, A.mpk2, A.mpk3, A.mpk4, A.sra, A.fla (provided that there is actual data in each of the saves)
-* B.mpk, B.eep -> B.srm (new srm file)
-* C.fla, C.srm -> C.srm (srm updated with C.fla)
-* D.srm, D.fla -> D.fla (fla updated from D.srm)
-* F.mpk1 F.mpk2 -> F.srm
+* B.mpk, B.eep -> B.srm (srm created)
+* C.fla, C.srm -> C.srm (srm created/updated with C.fla) (needs --overwrite to update C.srm)
+* D.srm, D.sra -> D.sra (sra created/updated from D.srm) (needs --overwrite to update D.sra)
+* F.mpk1 F.mpk2 -> F.srm (srm created)
 
 An *.mpk file will always be assigned to the first player controller pack.
 
@@ -93,9 +95,15 @@ If one of the arguments ```-c``` or ```-s``` is passed, then the program will fo
 Split, respectively. It will consider all files, irrespective of their names as inputs or outputs 
 depending in their save type.
 
+This will only operate for a single SRM file.
+
 #### Create
 
 Use ```-c``` or ```--create-srm```
+
+Inputs: *.eep, *.fla, *.sra and/or *.mpk(1-4)
+
+Output: *.srm
 
 For example
 ```sh
@@ -108,11 +116,15 @@ will create an SRM at D.srm using B.eep, D.fla, F.mpk1, F.mpk3
 
 Use ```-s``` or ```--split-srm```
 
+Input: *.srm
+
+Outputs: *.eep, *.fla, *.sra and/or *.mpk(1-4)
+
 For example
 ```sh
 $ ra_mp64_srm_convert -s A.srm B.mpk B.eep C.fla C.srm D.srm D.fla F.mpk1 F.mpk3
 ```
-will split D.srm into B.eep, D.fla, F.mpk1, F.mpk3
+will split D.srm into D.sra, B.eep, D.fla, F.mpk1, D.mpk2, F.mpk3 and/or D.mpk4
 
 ## File save type detection:
 
@@ -134,9 +146,7 @@ will split D.srm into B.eep, D.fla, F.mpk1, F.mpk3
 
 [Size source](http://micro-64.com/database/gamesave.shtml)
 
-## Usage
-
-To use it, simply drag and drop the file(s) into the program and it'll try to know what to do.
+## Help
 
 ~~~~~~~
 A simple converter for Retroarch's Mupen64Plus core save files

@@ -1,4 +1,5 @@
 use std::fmt::{Arguments, Display};
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
 use super::Verbosity;
@@ -78,21 +79,23 @@ impl Display for Padding {
   }
 }
 
-pub(crate) fn _log<F>(v: Verbosity, kind: Kind, fmt: F) -> F::Return
+pub(crate) fn _log<M>(v: Verbosity, kind: Kind, msg: M) -> M::Return
 where
-  F: Returner,
+  M: Returner,
 {
   let p = Padding;
   match resolve(v, kind) {
     Some(Kind::Out(k)) => {
-      print!("{k}{p}{fmt}");
-      fmt.displayed()
+      print!("{p}{k}{msg}");
+      let _ = std::io::stdout().flush();
+      msg.displayed()
     }
     Some(Kind::Err(k)) => {
-      eprint!("{k}{p}{fmt}");
-      fmt.displayed()
+      eprint!("{p}{k}{msg}");
+      let _ = std::io::stderr().flush();
+      msg.displayed()
     }
-    None => fmt.not_displayed(),
+    None => msg.not_displayed(),
   }
 }
 
@@ -103,11 +106,11 @@ where
   let p = Padding;
   let result = match resolve(v, kind) {
     Some(Kind::Out(k)) => {
-      println!("{k}{p}{fmt}");
+      println!("{p}{k}{fmt}");
       fmt.displayed()
     }
     Some(Kind::Err(k)) => {
-      eprintln!("{k}{p}{fmt}");
+      eprintln!("{p}{k}{fmt}");
       fmt.displayed()
     }
     None => fmt.not_displayed(),

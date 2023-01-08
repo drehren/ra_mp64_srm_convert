@@ -21,7 +21,7 @@ fn auto_missing_srm_file() -> TestResult<()> {
     .arg("missing.srm")
     .assert()
     .failure()
-    .stderr(predicate::str::contains("srm file doesn't exist"));
+    .stderr(predicate::str::contains("missing.srm doesn't exist"));
   Ok(())
 }
 
@@ -33,7 +33,7 @@ fn split_missing_srm_file() -> TestResult<()> {
     .arg("missing.srm")
     .assert()
     .failure()
-    .stderr(predicate::str::contains("srm file doesn't exist"));
+    .stderr(predicate::str::contains("missing.srm doesn't exist"));
   Ok(())
 }
 
@@ -45,7 +45,7 @@ fn create_srm_no_input() -> TestResult<()> {
     .arg("new.srm")
     .assert()
     .failure()
-    .stderr(predicate::str::contains("no input file(s)"));
+    .stderr(predicate::str::contains("no input files"));
   Ok(())
 }
 
@@ -69,12 +69,26 @@ impl Display for Endianness {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+enum Player {
+  P1,
+  P2,
+  P3,
+  P4,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum EepromSize {
+  _4Kbit,
+  _16Kbit,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 enum SaveType {
   FlashRam(Endianness),
   MupenControllerPack,
-  ControllerPack(usize),
+  ControllerPack(Player),
   Sram(Endianness),
-  Eeprom(usize),
+  Eeprom(EepromSize),
   Srm,
 }
 impl SaveType {
@@ -90,14 +104,14 @@ impl SaveType {
       },
       SaveType::MupenControllerPack => "mpk",
       SaveType::ControllerPack(n) => match n {
-        4 => "mpk4",
-        3 => "mpk3",
-        2 => "mpk2",
-        _ => "mpk1",
+        &Player::P1 => "mpk1",
+        &Player::P2 => "mpk2",
+        &Player::P3 => "mpk3",
+        &Player::P4 => "mpk4",
       },
       SaveType::Eeprom(size) => match size {
-        16 => "eep_16k",
-        _ => "eep_4k",
+        &EepromSize::_16Kbit => "eep_16k",
+        &EepromSize::_4Kbit => "eep_4k",
       },
       SaveType::Srm => "srm",
     }
@@ -158,8 +172,11 @@ impl DataPrepare {
     self.tmp.child("test_data")
   }
 
-  fn get_saves(&self, save_type: &SaveType) -> TestResult<Vec<PathBuf>> {
-    let save_path = self.test_data_dir().child(save_type);
+  fn get_saves<P>(&self, child_path: &P) -> TestResult<Vec<PathBuf>>
+  where
+    P: AsRef<Path> + ?Sized,
+  {
+    let save_path = self.test_data_dir().child(child_path);
 
     save_path.assert(predicate::path::is_dir());
 
@@ -189,9 +206,10 @@ enum CmdMode {
 #[derive(Debug, Default)]
 struct CmdOptions {
   mode: CmdMode,
+  overwrite: bool,
   change_endianness: bool,
   merge_mempacks: bool,
-  out_dir: PathBuf,
+  out_dir: Option<PathBuf>,
   srm: Option<PathBuf>,
 }
 
@@ -203,14 +221,22 @@ impl CmdOptions {
     }
   }
 
-  fn update_from_save_type(mut self, save_type: &SaveType) -> Self {
+  fn set_from_save_type(mut self, save_type: &SaveType) -> Self {
     self.change_endianness = save_type.is_big_endian();
     self.merge_mempacks = save_type == &SaveType::MupenControllerPack;
     self
   }
 
-  fn set_out_dir(mut self, data: &DataPrepare) -> Self {
-    self.out_dir = data.out_dir().to_path_buf();
+  fn set_overwrite(mut self, overwrite: bool) -> Self {
+    self.overwrite = overwrite;
+    self
+  }
+
+  fn set_out_dir<P>(mut self, out_dir: P) -> Self
+  where
+    P: AsRef<Path>,
+  {
+    self.out_dir = Some(out_dir.as_ref().to_owned());
     self
   }
 
@@ -219,7 +245,7 @@ impl CmdOptions {
     self
   }
 
-  fn apply(mut self, cmd: &mut Command) {
+  fn apply(self, cmd: &mut Command) {
     match self.mode {
       CmdMode::Create => cmd.arg("-c"),
       CmdMode::Split => cmd.arg("-s"),
@@ -231,20 +257,25 @@ impl CmdOptions {
     if self.merge_mempacks {
       cmd.arg("--merge-mempacks");
     }
-    cmd
-      .arg("--output-dir")
-      .arg(std::mem::replace(&mut self.out_dir, PathBuf::new()));
-
+    if self.overwrite {
+      cmd.arg("--overwrite");
+    }
+    if let Some(out_dir) = self.out_dir {
+      cmd.arg("--output-dir").arg(out_dir);
+    }
     if let Some(srm) = self.srm {
       cmd.arg(srm);
     }
   }
 }
 
-fn run(input_files: &Vec<PathBuf>, data: &DataPrepare, opts: CmdOptions) -> TestResult<Assert> {
+fn run<P>(input_files: &Vec<PathBuf>, cwd: P, opts: CmdOptions) -> TestResult<Assert>
+where
+  P: AsRef<Path>,
+{
   let mut cmd = Command::cargo_bin("ra_mp64_srm_convert")?;
 
-  opts.apply(cmd.current_dir(data.test_data_dir()));
+  opts.apply(cmd.current_dir(cwd));
 
   cmd.args(input_files);
 
@@ -265,23 +296,23 @@ impl Display for NoInputFilesError {
   }
 }
 
-fn create_split_test(data: &DataPrepare, save_type: SaveType) -> TestResult<()> {
+fn run_split_test(data: &DataPrepare, save_type: SaveType) -> TestResult<()> {
   let input_files = data.get_saves(&save_type)?;
   if input_files.is_empty() {
     return Err(Box::new(NoInputFilesError(save_type)));
   }
 
   let name = input_files[0]
-    .file_stem()
+    .file_name()
     .map(|n| Path::new(n).with_extension("srm"))
     .expect("file should have a name");
 
   let create_run = run(
     &input_files,
-    data,
+    data.test_data_dir(),
     CmdOptions::new(CmdMode::Create)
-      .update_from_save_type(&save_type)
-      .set_out_dir(data)
+      .set_from_save_type(&save_type)
+      .set_out_dir(data.out_dir())
       .set_srm(Some(name.clone())),
   )?;
 
@@ -300,11 +331,11 @@ fn create_split_test(data: &DataPrepare, save_type: SaveType) -> TestResult<()> 
   // an srm should exist now... if we were to split this one, its contents should match the input
   let split_run = run(
     &output_saves,
-    data,
+    data.test_data_dir(),
     CmdOptions::new(CmdMode::Split)
       .set_srm(Some(out_file.to_path_buf()))
-      .set_out_dir(data)
-      .update_from_save_type(&save_type),
+      .set_out_dir(data.out_dir())
+      .set_from_save_type(&save_type),
   )?;
 
   split_run.success();
@@ -323,6 +354,7 @@ fn create_split_test(data: &DataPrepare, save_type: SaveType) -> TestResult<()> 
       .out_dir()
       .child(output)
       .assert(predicate::path::eq_file(input));
+    assert_eq!(output.file_name(), input.file_name());
   }
 
   Ok(())
@@ -331,67 +363,67 @@ fn create_split_test(data: &DataPrepare, save_type: SaveType) -> TestResult<()> 
 #[test]
 fn create_from_sra_be_test() -> TestResult<()> {
   let data = DataPrepare::new()?;
-  create_split_test(&data, SaveType::Sram(Endianness::Little))
+  run_split_test(&data, SaveType::Sram(Endianness::Little))
 }
 
 #[test]
 fn create_from_sra_le_test() -> TestResult<()> {
   let data = DataPrepare::new()?;
-  create_split_test(&data, SaveType::Sram(Endianness::Little))
+  run_split_test(&data, SaveType::Sram(Endianness::Little))
 }
 
 #[test]
 fn create_from_fla_be_test() -> TestResult<()> {
   let data = DataPrepare::new()?;
-  create_split_test(&data, SaveType::FlashRam(Endianness::Big))
+  run_split_test(&data, SaveType::FlashRam(Endianness::Big))
 }
 
 #[test]
 fn create_from_fla_le_test() -> TestResult<()> {
   let data = DataPrepare::new()?;
-  create_split_test(&data, SaveType::FlashRam(Endianness::Little))
+  run_split_test(&data, SaveType::FlashRam(Endianness::Little))
 }
 
 #[test]
 fn create_from_eep_4k_test() -> TestResult<()> {
   let data = DataPrepare::new()?;
-  create_split_test(&data, SaveType::Eeprom(4))
+  run_split_test(&data, SaveType::Eeprom(EepromSize::_4Kbit))
 }
 
 #[test]
 fn create_from_eep_16k_test() -> TestResult<()> {
   let data = DataPrepare::new()?;
-  create_split_test(&data, SaveType::Eeprom(16))
+  run_split_test(&data, SaveType::Eeprom(EepromSize::_16Kbit))
 }
 
 #[test]
 fn create_from_mupen_mpk_test() -> TestResult<()> {
   let data = DataPrepare::new()?;
-  create_split_test(&data, SaveType::MupenControllerPack)
+  run_split_test(&data, SaveType::MupenControllerPack)
 }
 
 #[test]
 fn create_from_mpk1_test() -> TestResult<()> {
   let data = DataPrepare::new()?;
-  create_split_test(&data, SaveType::ControllerPack(1))
+  run_split_test(&data, SaveType::ControllerPack(Player::P1))
 }
 
 #[test]
 fn create_from_mpk2_test() -> TestResult<()> {
   let data = DataPrepare::new()?;
-  create_split_test(&data, SaveType::ControllerPack(2))
+  run_split_test(&data, SaveType::ControllerPack(Player::P2))
 }
 
 #[test]
 fn create_from_mpk3_test() -> TestResult<()> {
   let data = DataPrepare::new()?;
-  create_split_test(&data, SaveType::ControllerPack(3))
+  run_split_test(&data, SaveType::ControllerPack(Player::P3))
 }
 
 #[test]
 fn create_from_mpk4_test() -> TestResult<()> {
   let data = DataPrepare::new()?;
-  create_split_test(&data, SaveType::ControllerPack(4))
+  run_split_test(&data, SaveType::ControllerPack(Player::P4))
 }
 
 #[derive(Debug)]
@@ -411,8 +443,8 @@ fn split_srm_test() -> TestResult<()> {
 
   let split_run = run(
     &srm_files,
-    &data,
-    CmdOptions::new(CmdMode::Auto).set_out_dir(&data),
+    data.test_data_dir(),
+    CmdOptions::new(CmdMode::Auto).set_out_dir(data.out_dir()),
   )?;
 
   split_run.success();
@@ -443,8 +475,8 @@ fn split_srm_test() -> TestResult<()> {
 
     let create_run = run(
       files,
-      &data,
-      CmdOptions::new(CmdMode::Create).set_out_dir(&data),
+      data.test_data_dir(),
+      CmdOptions::new(CmdMode::Create).set_out_dir(data.out_dir()),
     )?;
 
     create_run.success();
@@ -457,6 +489,138 @@ fn split_srm_test() -> TestResult<()> {
         p
       })
       .assert(predicate::path::eq_file(srm));
+  }
+
+  Ok(())
+}
+
+#[test]
+fn verify_group_by_filename() -> TestResult<()> {
+  let data = DataPrepare::new()?;
+
+  let in_saves = data.out_dir().child("auto");
+  in_saves.create_dir_all()?;
+  in_saves.copy_from(
+    {
+      let source = data.test_data_dir().child("auto");
+      source.assert(predicate::path::is_dir());
+      source
+    },
+    &["*"],
+  )?;
+
+  // now build the file paths
+  let mut input_saves = Vec::with_capacity(9);
+  for name in [
+    "A.srm", "B.mpk", "B.eep", "C.fla", "C.srm", "D.srm", "D.sra", "F.mpk1", "F.mpk3",
+  ] {
+    input_saves.push(name.into());
+  }
+
+  let group_run = run(
+    &input_saves,
+    data.out_dir().child("auto"),
+    CmdOptions::new(CmdMode::Auto),
+  )?;
+
+  group_run.failure().stderr(
+    predicate::str::contains("will overwrite existing C.srm")
+      .and(predicate::str::contains("will overwrite existing D.sra")),
+  );
+
+  let group_run = run(
+    &input_saves,
+    data.out_dir().child("auto"),
+    CmdOptions::new(CmdMode::Auto).set_overwrite(true),
+  )?;
+
+  group_run.success();
+
+  Ok(())
+}
+
+#[test]
+fn verify_create_srm() -> TestResult<()> {
+  let data = DataPrepare::new()?;
+
+  let in_saves = data.out_dir().child("auto");
+  in_saves.create_dir_all()?;
+  in_saves.copy_from(
+    {
+      let source = data.test_data_dir().child("auto");
+      source.assert(predicate::path::is_dir());
+      source
+    },
+    &["*"],
+  )?;
+
+  let mut input_files = Vec::with_capacity(9);
+  for name in [
+    "A.srm", "B.mpk", "B.eep", "C.fla", "C.srm", "D.srm", "D.sra", "F.mpk1", "F.mpk3",
+  ] {
+    input_files.push(name.into());
+  }
+
+  let create1_run = run(
+    &input_files,
+    in_saves,
+    CmdOptions::new(CmdMode::Create).set_out_dir(data.out_dir().child("auto_out")),
+  )?;
+  create1_run.success();
+
+  data
+    .out_dir()
+    .child("auto_out")
+    .assert(predicate::path::is_dir());
+
+  data
+    .out_dir()
+    .child("auto_out/D.srm")
+    .assert(predicate::path::is_file());
+
+  Ok(())
+}
+
+#[test]
+fn verify_split_srm() -> TestResult<()> {
+  let data = DataPrepare::new()?;
+
+  let in_saves = data.out_dir().child("auto");
+  in_saves.create_dir_all()?;
+  in_saves.copy_from(
+    {
+      let source = data.test_data_dir().child("auto");
+      source.assert(predicate::path::is_dir());
+      source
+    },
+    &["*"],
+  )?;
+
+  let mut input_files = Vec::with_capacity(9);
+  for name in [
+    "A.srm", "B.mpk", "B.eep", "C.fla", "C.srm", "D.srm", "D.fla", "F.mpk1", "F.mpk3",
+  ] {
+    input_files.push(name.into());
+  }
+
+  let out_dir = data.out_dir().child("auto_out");
+
+  let create1_run = run(
+    &input_files,
+    in_saves,
+    CmdOptions::new(CmdMode::Split).set_out_dir(&out_dir),
+  )?;
+  create1_run.success();
+
+  out_dir.assert(predicate::path::is_dir());
+
+  let read_dir = out_dir.read_dir()?;
+  assert_eq!(read_dir.count(), 7);
+
+  for name in [
+    "D.sra", "B.eep", "D.fla", "F.mpk1", "D.mpk2", "F.mpk3", "D.mpk4",
+  ] {
+    out_dir.child(name).assert(predicate::path::is_file());
   }
 
   Ok(())
