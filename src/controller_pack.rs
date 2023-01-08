@@ -1,14 +1,15 @@
 #![allow(dead_code)]
 
-use std::{
-  convert::TryInto,
-  num::Wrapping,
-  ops::{Deref, DerefMut},
-  slice,
-};
+use std::array::from_fn;
+use std::convert::TryInto;
+use std::fmt::Debug;
+use std::io::Read;
+use std::mem::size_of;
+use std::slice;
 
 #[repr(C)]
-pub struct Mempack {
+#[derive(Clone, Copy)]
+pub struct ControllerPack {
   id_sector: IdSector,
   index_table: IndexTable,
   index_table_bkp: IndexTable,
@@ -16,21 +17,23 @@ pub struct Mempack {
   pages: [Page; 123],
 }
 
-impl Mempack {
-  pub fn new() -> Self {
+impl Default for ControllerPack {
+  fn default() -> Self {
     Self {
-      id_sector: IdSector::new(),
-      index_table: IndexTable::new(),
-      index_table_bkp: IndexTable::new(),
-      note_table: NoteTable::new(),
-      pages: [Page::new(); 123],
+      id_sector: IdSector::default(),
+      index_table: IndexTable::default(),
+      index_table_bkp: IndexTable::default(),
+      note_table: NoteTable::default(),
+      pages: [Page::default(); 123],
     }
   }
+}
 
-  pub fn is_empty(&self) -> bool {
+impl ControllerPack {
+  pub(crate) fn is_empty(&self) -> bool {
     const FREE_SPACE: u16 = u16::from_be_bytes([0, 3]);
     // check the index table, if all unallocated there is no prob
-    for v in self.index_table.inodes.windows(2) {
+    for v in self.index_table.inodes.chunks(2) {
       let val = u16::from_be_bytes(v.try_into().unwrap());
       if val != FREE_SPACE {
         return false;
@@ -39,38 +42,36 @@ impl Mempack {
     true
   }
 
-  pub fn init(&mut self) {
-    self.init_with_serial(&IdSector::A_DEFAULT_SERIAL);
+  pub(crate) fn infer_from<R: Read>(data: &mut R) -> std::io::Result<bool> {
+    let mut id_sector = IdSector::default();
+    data.read_exact(id_sector.as_mut())?;
+
+    // now test the checksums
+    Ok(id_sector.check())
   }
 
-  pub fn init_with_serial(&mut self, serial: &[u8; 24]) {
-    let id_sector = &mut self.id_sector;
-    id_sector.init_with_serial(&serial);
-
-    let idx_table = &mut self.index_table;
-    idx_table.init();
-    self.index_table_bkp = self.index_table;
+  pub(crate) fn is_valid(&self) -> bool {
+    self.id_sector.check() && self.index_table.calculate_checksum() == self.index_table.checksum
   }
 }
 
-impl Deref for Mempack {
-  type Target = [u8];
-  fn deref(&self) -> &Self::Target {
-    const _: () = assert!(std::mem::align_of::<Mempack>() == 1);
+impl AsRef<[u8]> for ControllerPack {
+  fn as_ref<'a>(&'a self) -> &'a [u8] {
+    const _: () = assert!(std::mem::align_of::<ControllerPack>() == 1);
     let ptr = self as *const _ as *const _;
     unsafe { slice::from_raw_parts(ptr, 0x8000) }
   }
 }
 
-impl DerefMut for Mempack {
-  fn deref_mut<'a>(&'a mut self) -> &'a mut Self::Target {
+impl AsMut<[u8]> for ControllerPack {
+  fn as_mut<'a>(&'a mut self) -> &'a mut [u8] {
     let ptr = self as *mut _ as *mut _;
     unsafe { slice::from_raw_parts_mut::<'a>(ptr, 0x8000) }
   }
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct IdSector {
   label: [u8; 32],
   id_block: IdBlock,
@@ -83,39 +84,24 @@ struct IdSector {
 }
 
 impl IdSector {
-  const A_DEFAULT_SERIAL: [u8; 24] = [
-    0xff, 0xff, 0xff, 0xff, 0x05, 0x1a, 0x5f, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-  ];
-
-  fn new() -> Self {
-    Self {
-      label: [0; 32],
-      id_block: IdBlock::new(),
-      unused1: [0; 32],
-      id_block_bk1: IdBlock::new(),
-      id_block_bk2: IdBlock::new(),
-      unused2: [0; 32],
-      id_block_bk3: IdBlock::new(),
-      unused3: [0; 32],
-    }
+  fn check(&self) -> bool {
+    self.id_block.check()
+      || self.id_block_bk1.check()
+      || self.id_block_bk2.check()
+      || self.id_block_bk3.check()
   }
+}
 
-  fn init_with_serial(&mut self, serial: &[u8; 24]) {
-    self.label.copy_from_slice(&[
-      0x81, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
-      0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
-      0x1e, 0x1f,
-    ]);
-    self.id_block.init_with_serial(serial);
-    self.id_block_bk1 = self.id_block;
-    self.id_block_bk2 = self.id_block;
-    self.id_block_bk3 = self.id_block;
+impl AsMut<[u8]> for IdSector {
+  fn as_mut<'a>(&'a mut self) -> &'a mut [u8] {
+    const _: () = assert!(std::mem::align_of::<IdSector>() == 1);
+    let ptr = self as *mut _ as *mut _;
+    unsafe { slice::from_raw_parts_mut::<'a>(ptr, size_of::<IdSector>()) }
   }
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(PartialEq, Clone, Copy, Default)]
 struct IdBlock {
   serial: [u8; 24],
   unused1: u8,
@@ -127,49 +113,53 @@ struct IdBlock {
 }
 
 impl IdBlock {
-  fn new() -> Self {
-    Self {
-      serial: [0; 24],
-      unused1: 0,
-      dev_id: 0,
-      bank_size: 0,
-      unused2: 0,
-      checksum1: [0; 2],
-      checksum2: [0; 2],
-    }
+  fn check(&self) -> bool {
+    // The first checksum is a 16-bit big endian word computed by
+    // summing the first fourteen 16-bit words in the structure
+    // check against the checksum
+    let sum1 = self.calculate_checksum1();
+    let sum2 = self.calculate_checksum2();
+    return sum1 == self.checksum1 && sum2 == self.checksum2;
   }
 
-  fn init_with_serial(&mut self, serial: &[u8; 24]) {
-    self.serial.copy_from_slice(serial);
-    self.unused1 = 0xff;
-    self.dev_id = 0xff;
-    self.bank_size = 1;
-    self.unused2 = 0xff;
-
-    let mut sum = Wrapping(0u16);
-    for data in self.serial.windows(2) {
-      sum += Wrapping(u16::from_be_bytes(data.try_into().unwrap()));
+  fn calculate_checksum1(&self) -> [u8; 2] {
+    let mut sum = 0u16;
+    for data in self.serial.chunks(2) {
+      sum = sum.wrapping_add(u16::from_be_bytes(data.try_into().unwrap()));
     }
-    sum += Wrapping(u16::from_be_bytes([self.unused1, self.dev_id]));
-    sum += Wrapping(u16::from_be_bytes([self.bank_size, self.unused2]));
+    sum = sum.wrapping_add(u16::from_be_bytes([self.unused1, self.dev_id]));
+    sum = sum.wrapping_add(u16::from_be_bytes([self.bank_size, self.unused2]));
+    sum.to_be_bytes()
+  }
 
-    self.checksum1.copy_from_slice(&sum.0.to_be_bytes());
-    sum = Wrapping(u16::from_be(0xF2FF)) - sum;
-    self.checksum2.copy_from_slice(&sum.0.to_be_bytes());
+  fn calculate_checksum2(&self) -> [u8; 2] {
+    u16::from_be_bytes([0xff, 0xf2])
+      .wrapping_sub(u16::from_be_bytes(self.checksum1))
+      .to_be_bytes()
   }
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct IndexTable {
   unused1: u8,
   checksum: u8,
   unused2: [u8; 8],
   inodes: [u8; 246],
 }
+impl Debug for IndexTable {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("IndexTable")
+      .field("unused1", &self.unused1)
+      .field("checksum", &self.checksum)
+      .field("unused2", &self.unused2)
+      //.field("inodes", &self.inodes)
+      .finish_non_exhaustive()
+  }
+}
 
-impl IndexTable {
-  fn new() -> Self {
+impl Default for IndexTable {
+  fn default() -> Self {
     Self {
       unused1: 0,
       checksum: 0,
@@ -177,38 +167,109 @@ impl IndexTable {
       inodes: [0; 246],
     }
   }
-
-  fn init(&mut self) {
-    self.unused1 = 0;
-    self.checksum = 0;
-    self.unused2.fill(0);
-    self.inodes.fill(3);
-    self.inodes.iter_mut().step_by(2).for_each(|v| *v = 0);
-    self.update_checksum();
-  }
-
-  fn update_checksum(&mut self) {
-    let mut sum = Wrapping(0u8);
-    for val in &self.inodes {
-      sum += Wrapping(*val);
-    }
-    self.checksum = sum.0;
-  }
 }
 
-#[repr(C)]
-struct NoteTable([u8; 16 * 32]); // notes * note_size
-impl NoteTable {
-  fn new() -> Self {
-    Self([0u8; 16 * 32])
+impl IndexTable {
+  pub(crate) fn calculate_checksum(&self) -> u8 {
+    self.inodes.iter().fold(0u8, |a, &b| a.wrapping_add(b))
   }
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct Page([u8; 256]);
-impl Page {
-  fn new() -> Self {
+struct NoteTable([u8; 16 * 32]); // notes * note_size
+impl Default for NoteTable {
+  fn default() -> Self {
+    Self([0; 16 * 32])
+  }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Page([u8; 256]);
+impl Default for Page {
+  fn default() -> Self {
     Self([0; 256])
+  }
+}
+
+#[derive(Default)]
+pub(crate) struct ControllerPackInitializer;
+impl ControllerPackInitializer {
+  pub(crate) fn new() -> Self {
+    Self {}
+  }
+}
+
+const MUPEN64_SERIAL: [u8; 24] = [
+  0xff, 0xff, 0xff, 0xff, 0x05, 0x1a, 0x5f, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+];
+
+impl ControllerPackInitializer {
+  pub(crate) fn init(&mut self, controller_pack: &mut ControllerPack) {
+    self.init_id_sector(&mut controller_pack.id_sector);
+    self.init_index_table(&mut controller_pack.index_table);
+    controller_pack.index_table_bkp = controller_pack.index_table;
+  }
+
+  fn init_id_sector(&mut self, id_sector: &mut IdSector) {
+    id_sector.label = from_fn(|i| i as u8);
+    id_sector.label[0] = 0x81;
+    self.init_id_block(&mut id_sector.id_block);
+    id_sector.id_block_bk1 = id_sector.id_block;
+    id_sector.id_block_bk2 = id_sector.id_block;
+    id_sector.id_block_bk3 = id_sector.id_block;
+  }
+
+  fn id_block_serial(&mut self, serial: &mut [u8; 24]) {
+    *serial = MUPEN64_SERIAL;
+  }
+
+  fn init_id_block(&mut self, id_block: &mut IdBlock) {
+    self.id_block_serial(&mut id_block.serial);
+
+    id_block.unused1 = 0xff;
+    id_block.dev_id = 0xff;
+    id_block.bank_size = 1;
+    id_block.unused2 = 0xff;
+
+    id_block.checksum1 = id_block.calculate_checksum1();
+    id_block.checksum2 = id_block.calculate_checksum2();
+  }
+
+  fn init_index_table(&mut self, table: &mut IndexTable) {
+    table.unused1 = 0;
+    table.checksum = 113; // 3 * 246 / 2 u8 wrapped
+    table.unused2.fill(0);
+    table.inodes = from_fn(|i| ((i % 2) * 3) as u8);
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{ControllerPack, ControllerPackInitializer};
+
+  #[test]
+  fn init_pack() {
+    let mut cp = ControllerPack::default();
+
+    assert!(!cp.is_empty());
+
+    let mut pack_init = ControllerPackInitializer::new();
+
+    pack_init.init(&mut cp);
+
+    assert!(cp.is_empty());
+    assert_eq!(cp.index_table_bkp, cp.index_table);
+    assert_eq!(cp.index_table.checksum, cp.index_table.calculate_checksum());
+    assert_eq!(
+      cp.id_sector.id_block.checksum1,
+      cp.id_sector.id_block.calculate_checksum1()
+    );
+    assert_eq!(
+      cp.id_sector.id_block.checksum2,
+      cp.id_sector.id_block.calculate_checksum2()
+    );
   }
 }

@@ -1,30 +1,29 @@
-use std::ops::{Deref, DerefMut};
-
 macro_rules! add_battery {
-  ($name:ident,$size:literal,$init:literal) => {
-    pub struct $name([u8; $size]);
+  ($name:ident,$size:literal,$init:literal,$ext:literal) => {
+    pub(crate) struct $name([u8; $size]);
     impl $name {
-      pub fn new() -> Self {
-        Self([$init; $size])
-      }
-      pub fn is_empty(&self) -> bool {
-        self.0.iter().rposition(|b| *b != $init) == None
+      pub(crate) fn is_empty(&self) -> bool {
+        self.0.iter().rposition(|b| b != &$init) == None
       }
     }
-    impl Deref for $name {
-      type Target = [u8];
-      fn deref<'a>(&'a self) -> &'a [u8] {
+    impl AsRef<[u8]> for $name {
+      fn as_ref<'a>(&'a self) -> &'a [u8] {
         &self.0
       }
     }
-    impl DerefMut for $name {
-      fn deref_mut<'a>(&'a mut self) -> &'a mut [u8] {
+    impl AsMut<[u8]> for $name {
+      fn as_mut<'a>(&'a mut self) -> &'a mut [u8] {
         &mut self.0
+      }
+    }
+    impl Default for $name {
+      fn default() -> Self {
+        Self([$init; $size])
       }
     }
   };
 }
 
-add_battery!(Eeprom, 0x800, 0xff);
-add_battery!(Sram, 0x8000, 0xff);
-add_battery!(FlashRam, 0x20000, 0xff);
+add_battery!(Eeprom, 0x800, 0xff, "eep");
+add_battery!(Sram, 0x8000, 0xff, "sra");
+add_battery!(FlashRam, 0x20000, 0xff, "fla");
