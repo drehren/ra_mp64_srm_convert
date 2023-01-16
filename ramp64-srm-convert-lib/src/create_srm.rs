@@ -38,8 +38,7 @@ pub(crate) fn create_srm(output_path: PathBuf, args: &BaseArgs, input: SrmPaths)
   }
 
   if args.merge_mempacks {
-    let [cp_path, _, _, _] = input.cp;
-    if let Some(cp_path) = cp_path {
+    if let [Some(cp_path), _, _, _] = input.cp {
       File::open(&cp_path)
         .and_then(|mut f| {
           for i in 0..4 {

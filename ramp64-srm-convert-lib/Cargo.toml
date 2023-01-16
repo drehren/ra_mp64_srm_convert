@@ -1,0 +1,15 @@
+[package]
+name = "ramp64-srm-convert-lib"
+description = "The library to build RetroArch Mupen64 SRM Converter."
+version = "0.1.0"
+authors = ["Daniel Rehren <daniel.rehren.a@gmail.com>"]
+edition = "2021"
+readme = "README.md"
+homepage = "https://github.com/drehren/ra_mp64_srm_convert"
+repository = "https://github.com/drehren/ra_mp64_srm_convert"
+keywords = ["util", "retroarch", "save"]
+license = "MIT"
+
+[dependencies]
+clap = { version = "4.0", features = ["derive"] }
+log = "0.4"

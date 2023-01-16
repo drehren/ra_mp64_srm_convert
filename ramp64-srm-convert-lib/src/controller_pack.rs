@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::array::from_fn;
 use std::convert::TryInto;
 use std::fmt::Debug;
@@ -9,7 +7,7 @@ use std::slice;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct ControllerPack {
+pub(crate) struct ControllerPack {
   id_sector: IdSector,
   index_table: IndexTable,
   index_table_bkp: IndexTable,
@@ -48,10 +46,6 @@ impl ControllerPack {
 
     // now test the checksums
     Ok(id_sector.check())
-  }
-
-  pub(crate) fn is_valid(&self) -> bool {
-    self.id_sector.check() && self.index_table.calculate_checksum() == self.index_table.checksum
   }
 }
 
@@ -140,24 +134,13 @@ impl IdBlock {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct IndexTable {
   unused1: u8,
   checksum: u8,
   unused2: [u8; 8],
   inodes: [u8; 246],
 }
-impl Debug for IndexTable {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.debug_struct("IndexTable")
-      .field("unused1", &self.unused1)
-      .field("checksum", &self.checksum)
-      .field("unused2", &self.unused2)
-      //.field("inodes", &self.inodes)
-      .finish_non_exhaustive()
-  }
-}
-
 impl Default for IndexTable {
   fn default() -> Self {
     Self {
@@ -166,12 +149,6 @@ impl Default for IndexTable {
       unused2: [0; 8],
       inodes: [0; 246],
     }
-  }
-}
-
-impl IndexTable {
-  pub(crate) fn calculate_checksum(&self) -> u8 {
-    self.inodes.iter().fold(0u8, |a, &b| a.wrapping_add(b))
   }
 }
 
@@ -262,7 +239,6 @@ mod tests {
 
     assert!(cp.is_empty());
     assert_eq!(cp.index_table_bkp, cp.index_table);
-    assert_eq!(cp.index_table.checksum, cp.index_table.calculate_checksum());
     assert_eq!(
       cp.id_sector.id_block.checksum1,
       cp.id_sector.id_block.calculate_checksum1()

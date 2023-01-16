@@ -77,7 +77,6 @@ mod tests {
     assert!(srm.flashram.is_empty());
     for cp in &srm.controller_pack {
       assert!(cp.is_empty());
-      assert!(cp.is_valid());
     }
   }
 }

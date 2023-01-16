@@ -21,7 +21,7 @@ fn auto_missing_srm_file() -> TestResult<()> {
     .arg("missing.srm")
     .assert()
     .failure()
-    .stderr(predicate::str::contains("missing.srm doesn't exist"));
+    .stderr(predicate::str::contains("missing.srm does not exist"));
   Ok(())
 }
 
@@ -33,7 +33,7 @@ fn split_missing_srm_file() -> TestResult<()> {
     .arg("missing.srm")
     .assert()
     .failure()
-    .stderr(predicate::str::contains("missing.srm doesn't exist"));
+    .stderr(predicate::str::contains("missing.srm does not exist"));
   Ok(())
 }
 
