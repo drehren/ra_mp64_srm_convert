@@ -52,7 +52,7 @@ Output:
 #### Example 2
 
 ```sh
-$ ra_mp64_srm_convert -s B.mpk B.eep C.fla F.mpk3 C.srm
+$ ra_mp64_srm_convert -s B.mpk B.eep C.fla F.mpk3 A.srm
 ```
 
 Output:

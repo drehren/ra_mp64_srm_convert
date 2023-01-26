@@ -1,9 +1,9 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::path::PathBuf;
 
 use crate::retroarch_srm::RetroArchSrm;
-use crate::{change_endianness, BaseArgs, OutputDir, PathError, Result, SrmPaths};
+use crate::SrmFile;
+use crate::{change_endianness, convert_params::SrmPaths, BaseArgs, OutputDir, PathError, Result};
 
 macro_rules! open_write_battery {
   ($path:expr, $ext:expr, $battery:expr, $out_dir:expr, $opts:expr) => {{
@@ -15,11 +15,11 @@ macro_rules! open_write_battery {
   }};
 }
 
-pub(crate) fn split_srm(input_path: PathBuf, args: &BaseArgs, output: SrmPaths) -> Result {
+pub(crate) fn split_srm(input_path: SrmFile, args: &BaseArgs, output: SrmPaths) -> Result {
   let mut srm = Box::<RetroArchSrm>::default();
   File::open(&input_path)
     .and_then(|mut f| f.read_exact(srm.as_mut().as_mut()))
-    .or_else(|e| Err(PathError(input_path.clone(), e)))?;
+    .or_else(|e| Err(PathError(input_path.clone().into(), e)))?;
 
   if args.change_endianness {
     change_endianness(srm.sram.as_mut());
@@ -52,7 +52,7 @@ pub(crate) fn split_srm(input_path: PathBuf, args: &BaseArgs, output: SrmPaths) 
 
   if args.merge_mempacks {
     if srm.controller_pack.iter().any(|cp| !cp.is_empty()) {
-      let [path, _, _, _] = output.cp;
+      let [path, ..] = output.cp;
       let path = path.map_or_else(|| out_dir.from_base("mpk"), |p| out_dir.output_path(&p));
       opts
         .open(&path)

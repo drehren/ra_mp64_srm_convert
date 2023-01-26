@@ -6,6 +6,7 @@
 #![deny(missing_docs)]
 
 mod controller_pack;
+mod convert_params;
 mod create_srm;
 mod game_pack;
 mod grouping;
@@ -13,19 +14,17 @@ mod retroarch_srm;
 mod split_srm;
 
 use std::{
-  ffi, fmt, fs, io,
+  error, ffi, fmt, fs, io,
+  ops::Deref,
   path::{Path, PathBuf},
+  result,
 };
 
-pub use grouping::{group_saves, validate_groups, InvalidGroup, Problem};
+use controller_pack::ControllerPack;
+pub use convert_params::{ConvertMode, ConvertParams};
+pub use grouping::{group_saves, validate_groups, GroupedSaves, Grouping, InvalidGroup, Problem};
 
 use log::info;
-
-fn pack_number<P: AsRef<Path>>(path: &P) -> Option<usize> {
-  let str = path.as_ref().extension()?.to_str()?;
-  let last = str.chars().last()?;
-  Some(last.to_digit(5)?.checked_sub(1)? as usize)
-}
 
 fn change_endianness(buf: &mut [u8]) {
   for i in (0..buf.len()).step_by(4) {
@@ -101,183 +100,6 @@ impl<'out, 'base> OutputDir<'out, 'base> {
   }
 }
 
-/// The mode to use to convert the SRM file
-#[derive(Debug, PartialEq)]
-pub enum ConvertMode {
-  /// Specify this variant to create an SRM file
-  Create(PathBuf),
-  /// Specify this variant to split an SRM file
-  Split(PathBuf),
-}
-
-impl ConvertMode {
-  fn get_path(&self) -> &Path {
-    match self {
-      ConvertMode::Create(p) | ConvertMode::Split(p) => p,
-    }
-  }
-
-  fn into_path(self) -> PathBuf {
-    match self {
-      Self::Create(path) | Self::Split(path) => path,
-    }
-  }
-
-  fn is_create(&self) -> bool {
-    match self {
-      ConvertMode::Create(_) => true,
-      _ => false,
-    }
-  }
-}
-
-impl fmt::Display for ConvertMode {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match &self {
-      ConvertMode::Create(path) if !path.exists() => f.write_str("create "),
-      ConvertMode::Create(_) => f.write_str("update "),
-      ConvertMode::Split(_) => f.write_str("split "),
-    }?;
-    f.write_fmt(format_args!("{}", self.get_path().display()))
-  }
-}
-
-#[derive(Debug, Default)]
-struct SrmPaths {
-  eep: Option<PathBuf>,
-  sra: Option<PathBuf>,
-  fla: Option<PathBuf>,
-  cp: [Option<PathBuf>; 4],
-}
-
-impl SrmPaths {
-  fn insert_or_update_cp(&mut self, is_mupen: bool, path: PathBuf) -> SavedPath {
-    if is_mupen {
-      let _ = self.cp.split_first_mut().map(|(_, r)| r.fill(None));
-      SavedPath::cp(ControllerPackKind::Mupen, self.cp[0].replace(path))
-    } else {
-      let i = pack_number(&path).map_or(0, |i| i);
-      SavedPath::cp((i + 1).into(), self.cp[i].replace(path))
-    }
-  }
-
-  pub fn is_empty(&self) -> bool {
-    self.eep.is_none()
-      && self.fla.is_none()
-      && self.sra.is_none()
-      && self.cp.iter().all(Option::is_none)
-  }
-
-  pub fn any_is_file(&self) -> bool {
-    self.eep.as_ref().map_or(false, |p| p.is_file())
-      || self.fla.as_ref().map_or(false, |p| p.is_file())
-      || self.sra.as_ref().map_or(false, |p| p.is_file())
-      || self.cp[0].as_ref().map_or(false, |p| p.is_file())
-      || self.cp[1].as_ref().map_or(false, |p| p.is_file())
-      || self.cp[2].as_ref().map_or(false, |p| p.is_file())
-      || self.cp[3].as_ref().map_or(false, |p| p.is_file())
-  }
-
-  pub fn get_invalid_paths(&self) -> Vec<&Path> {
-    let mut vec = Vec::new();
-    if let Some(p) = &self.eep {
-      if !p.is_file() {
-        vec.push(p.as_path());
-      }
-    }
-    if let Some(p) = &self.fla {
-      if !p.is_file() {
-        vec.push(p.as_path());
-      }
-    }
-    if let Some(p) = &self.sra {
-      if !p.is_file() {
-        vec.push(p.as_path());
-      }
-    }
-    for p in &self.cp {
-      if let Some(p) = p {
-        if !p.is_file() {
-          vec.push(p.as_path())
-        }
-      }
-    }
-    vec
-  }
-}
-
-macro_rules! display_some_path {
-  ($c:expr, $f:expr, $name:expr, $path:expr) => {
-    if let Some(path) = $path {
-      if $c > 0 {
-        $f.write_str(" and ")?;
-      }
-      $f.write_fmt(format_args!("{} ({})", $name, path.display()))?;
-      $c += 1;
-    }
-  };
-}
-
-impl fmt::Display for SrmPaths {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let mut counter = 0;
-    display_some_path!(counter, f, "EEPROM", &self.eep);
-    display_some_path!(counter, f, "SRAM", &self.sra);
-    display_some_path!(counter, f, "FlashRAM", &self.fla);
-    if !f.alternate() {
-      for i in 1..=4 {
-        display_some_path!(counter, f, format!("Controller Pack {i}"), &self.cp[i - 1]);
-      }
-    } else {
-      if let Some(path) = &self.cp[0] {
-        if counter > 0 {
-          f.write_str(" and ")?;
-        }
-        f.write_fmt(format_args!("Controller Pack ({})", path.display()))?;
-      }
-    }
-    Ok(())
-  }
-}
-
-/// Provides the grouping options
-#[derive(Debug, Clone, Copy)]
-pub enum GroupOpts {
-  /// Used to force creation with all files
-  ForceCreate(bool),
-  /// Used to force split into all files
-  ForceSplit(bool),
-  /// Used to automatically group based on file type
-  Automatic(bool),
-}
-
-impl GroupOpts {
-  fn is_mupen(&self) -> bool {
-    match self {
-      Self::ForceCreate(m) | Self::ForceSplit(m) | Self::Automatic(m) => *m,
-    }
-  }
-  fn is_automatic(&self) -> bool {
-    match self {
-      GroupOpts::Automatic(_) => true,
-      _ => false,
-    }
-  }
-  fn is_create(&self) -> bool {
-    match self {
-      Self::ForceCreate(_) => true,
-      _ => false,
-    }
-  }
-}
-
-/// Provides the parameter to apply a conversion
-#[derive(Debug, Default)]
-pub struct ConvertParams {
-  mode: Option<ConvertMode>,
-  paths: SrmPaths,
-}
-
 /// Represents the kind of controller pack in use
 #[repr(i32)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -306,8 +128,36 @@ impl From<usize> for ControllerPackKind {
   }
 }
 
+impl From<ControllerPackKind> for usize {
+  fn from(value: ControllerPackKind) -> Self {
+    if value == ControllerPackKind::Mupen {
+      return 0;
+    }
+    value as usize
+  }
+}
+
+impl From<ControllerPackKind> for SaveType {
+  fn from(value: ControllerPackKind) -> Self {
+    Self::ControllerPack(value)
+  }
+}
+
+impl From<Option<&ffi::OsStr>> for ControllerPackKind {
+  fn from(value: Option<&ffi::OsStr>) -> Self {
+    value.map_or(Self::Player1, |ext| {
+      match ext.to_ascii_uppercase().to_str() {
+        Some("MPK2") => Self::Player2,
+        Some("MPK3") => Self::Player3,
+        Some("MPK4") => Self::Player4,
+        _ => Self::Player1,
+      }
+    })
+  }
+}
+
 /// The save types handled by the program
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum SaveType {
   /// EEPROM save (4kbit or 16kbit)
   Eeprom,
@@ -317,8 +167,6 @@ pub enum SaveType {
   FlashRam,
   /// Controller/Memory Pack (256kbit)
   ControllerPack(ControllerPackKind),
-  /// RetroArch Mupen64Plus Save
-  Srm,
 }
 
 impl fmt::Display for SaveType {
@@ -331,124 +179,242 @@ impl fmt::Display for SaveType {
       SaveType::ControllerPack(player) => {
         f.write_fmt(format_args!("Controller Pack {}", { *player as i32 + 1 }))
       }
-      SaveType::Srm => f.write_str("SRM"),
     }
   }
 }
 
-struct SavedPath(SaveType, Option<PathBuf>);
-
-impl SavedPath {
-  fn srm(path: Option<PathBuf>) -> Self {
-    Self(SaveType::Srm, path)
-  }
-  fn sram(path: Option<PathBuf>) -> Self {
-    Self(SaveType::Sram, path)
-  }
-  fn eep(path: Option<PathBuf>) -> Self {
-    Self(SaveType::Eeprom, path)
-  }
-  fn fla(path: Option<PathBuf>) -> Self {
-    Self(SaveType::FlashRam, path)
-  }
-  fn cp(kind: ControllerPackKind, path: Option<PathBuf>) -> Self {
-    Self(SaveType::ControllerPack(kind), path)
+/// Specifies an [SrmFile] inference error
+#[derive(Debug)]
+pub enum SrmFileInferError {
+  /// The specified file was not of the expected size
+  InvalidSize,
+  /// The specified file did not contain the expected extension
+  InvalidExtension,
+  /// The specified path did not have an extension
+  NoExtension,
+  /// An Io error
+  Other(io::Error),
+}
+impl fmt::Display for SrmFileInferError {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self {
+      Self::InvalidSize => f.write_str("invalid file size"),
+      Self::InvalidExtension => f.write_str("has not an SRM extension"),
+      Self::NoExtension => f.write_str("path did not have an extension"),
+      Self::Other(err) => f.write_fmt(format_args!("{err}")),
+    }
   }
 }
+impl error::Error for SrmFileInferError {}
 
-macro_rules! if_controller_pack {
-  ($path:expr, $cp:block, $not_cp:block) => {
-    fs::File::open(&$path)
-      .and_then(|mut f| controller_pack::ControllerPack::infer_from(&mut f))
-      .map(|is_cp| if is_cp $cp else $not_cp)
-  };
+/// Specifies a typed SRM file
+#[derive(Debug, PartialEq, Clone)]
+pub struct SrmFile(PathBuf);
+impl SrmFile {
+  fn from_name<S: AsRef<str>>(name: S) -> Self {
+    Self(Path::new(name.as_ref()).with_extension("srm"))
+  }
+  fn from_file_len<P: AsRef<Path>>(path: P) -> result::Result<Self, SrmFileInferError> {
+    fs::File::open(path.as_ref())
+      .or_else(|e| Err(SrmFileInferError::Other(e)))
+      .and_then(|file| {
+        if file.metadata().unwrap().len() == 0x48800 {
+          Ok(Self(path.as_ref().to_path_buf()))
+        } else {
+          Err(SrmFileInferError::InvalidSize)
+        }
+      })
+  }
+  fn from_extension<P: AsRef<Path>>(path: P) -> result::Result<Self, SrmFileInferError> {
+    let path = path.as_ref();
+    path
+      .extension()
+      .ok_or(SrmFileInferError::NoExtension)
+      .and_then(|ext| {
+        if ext.to_ascii_uppercase().to_str() == Some("SRM") {
+          Ok(Self(path.to_path_buf()))
+        } else {
+          Err(SrmFileInferError::InvalidExtension)
+        }
+      })
+  }
 }
+impl Deref for SrmFile {
+  type Target = Path;
 
-impl ConvertParams {
-  fn set_or_update_mode(&mut self, path: PathBuf, opts: GroupOpts) -> SavedPath {
-    SavedPath::srm(
-      match opts {
-        GroupOpts::ForceCreate(_) => self.mode.replace(ConvertMode::Create(path)),
-        GroupOpts::ForceSplit(_) => self.mode.replace(ConvertMode::Split(path)),
-        GroupOpts::Automatic(_) => match &mut self.mode {
-          Some(ConvertMode::Create(value) | ConvertMode::Split(value)) => {
-            Some(ConvertMode::Create(std::mem::replace(value, path)))
-          }
-          None if self.paths.is_empty() => self.mode.replace(ConvertMode::Split(path)),
-          None => self.mode.replace(ConvertMode::Create(path)),
-        },
-      }
-      .map(ConvertMode::into_path),
-    )
+  fn deref(&self) -> &Self::Target {
+    &self.0
   }
-
-  /// Use this function to get or set the [ConvertMode] for this [ConvertParams]
-  pub fn get_or_set_mode<F>(&mut self, f: F) -> &mut ConvertMode
-  where
-    F: FnOnce() -> ConvertMode,
-  {
-    self.mode.get_or_insert_with(f)
+}
+impl AsRef<Path> for SrmFile {
+  fn as_ref(&self) -> &Path {
+    &self.0
   }
+}
+impl From<SrmFile> for PathBuf {
+  fn from(value: SrmFile) -> Self {
+    value.0
+  }
+}
+impl TryFrom<PathBuf> for SrmFile {
+  type Error = SrmFileInferError;
 
-  fn add(&mut self, path: PathBuf, opts: GroupOpts) -> io::Result<SavedPath> {
+  fn try_from(path: PathBuf) -> result::Result<Self, Self::Error> {
     if path.exists() {
-      self.add_from_data(path, opts)
+      Self::from_file_len(&path).or_else(|_| Self::from_extension(path))
     } else {
-      self.add_from_ext(path, opts)
-    }
-  }
-
-  fn add_from_data(&mut self, path: PathBuf, opts: GroupOpts) -> io::Result<SavedPath> {
-    // we can identify the saves based on their file size & first bytes
-    match path.metadata().map(|m| m.len()) {
-      // 4Kbit or 16Kbit eeprom
-      Ok(0x200 | 0x800) => Ok(SavedPath::eep(self.paths.eep.replace(path))),
-      // 256Kbit sram or controller pack
-      Ok(0x8000) => if_controller_pack!(
-        path,
-        { self.paths.insert_or_update_cp(opts.is_mupen(), path) },
-        { SavedPath::sram(self.paths.sra.replace(path)) }
-      ),
-      // 1Mbit flash ram or 4 merged controller packs
-      Ok(0x20000) => if_controller_pack!(path, { self.paths.insert_or_update_cp(true, path) }, {
-        SavedPath::fla(self.paths.fla.replace(path))
-      }),
-      // uncompressed retroarch srm save size
-      Ok(0x48800) => Ok(self.set_or_update_mode(path, opts)),
-      // unknown
-      Ok(_) => Err(io::Error::new(io::ErrorKind::Other, "Unknown file")),
-      _ => unreachable!(),
-    }
-  }
-
-  fn add_from_ext(&mut self, path: PathBuf, opts: GroupOpts) -> io::Result<SavedPath> {
-    let Some(extension) = path.extension() else {
-      return Err(io::Error::new(io::ErrorKind::Other, "File without extension"));
-    };
-
-    match extension.to_ascii_uppercase().to_str() {
-      Some("SRM") => Ok(self.set_or_update_mode(path, opts)),
-      Some("SRA") => Ok(SavedPath::sram(self.paths.sra.replace(path))),
-      Some("FLA") => Ok(SavedPath::fla(self.paths.fla.replace(path))),
-      Some("EEP") => Ok(SavedPath::eep(self.paths.eep.replace(path))),
-      Some("MPK" | "MPK1" | "MPK2" | "MPK3" | "MPK4") => {
-        Ok(self.paths.insert_or_update_cp(opts.is_mupen(), path))
-      }
-      _ => Err(io::Error::new(io::ErrorKind::Other, "Unknown extension")),
+      Self::from_extension(path)
     }
   }
 }
+impl From<&str> for SrmFile {
+  fn from(name: &str) -> Self {
+    Self::from_name(name)
+  }
+}
 
-impl fmt::Display for ConvertParams {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match &self.mode {
-      Some(mode) => f.write_fmt(format_args!(
-        "{mode} {} {}",
-        if mode.is_create() { "from" } else { "to" },
-        self.paths
-      )),
-      None => f.write_str("No mode"),
+/// Defines an specific save file
+#[derive(Debug, Clone, PartialEq)]
+pub struct SaveFile {
+  save_type: SaveType,
+  file: PathBuf,
+}
+
+impl SaveFile {
+  pub(crate) fn is_controller_pack(&self) -> bool {
+    match self.save_type {
+      SaveType::ControllerPack(_) => true,
+      _ => false,
     }
+  }
+
+  pub(crate) fn from_file_len<P: AsRef<Path>>(path: P) -> result::Result<Self, SaveFileInferError> {
+    fs::File::open(path.as_ref())
+      .or_else(|e| Err(e.into()))
+      .and_then(|mut file| {
+        match file.metadata().unwrap().len() {
+          // 4Kbit or 16Kbit eeprom
+          0x200 | 0x800 => Ok(SaveType::Eeprom),
+          // 256Kbit sram or controller pack
+          0x8000 => ControllerPack::infer_from(&mut file)
+            .map(|cp| {
+              if cp {
+                SaveType::ControllerPack(path.as_ref().extension().into())
+              } else {
+                SaveType::Sram
+              }
+            })
+            .or_else(|e| Err(e.into())),
+          // 1Mbit flash ram or 4 merged controller packs
+          0x20000 => ControllerPack::infer_from(&mut file)
+            .map(|cp| {
+              if cp {
+                SaveType::ControllerPack(ControllerPackKind::Mupen)
+              } else {
+                SaveType::FlashRam
+              }
+            })
+            .or_else(|e| Err(e.into())),
+          // uncompressed retroarch srm save size
+          0x48800 => Err(SaveFileInferError::IsAnSrmFile),
+          // unknown
+          _ => Err(SaveFileInferError::UnknownFile),
+        }
+      })
+      .map(|save_type| Self {
+        save_type,
+        file: path.as_ref().to_path_buf(),
+      })
+  }
+
+  pub(crate) fn from_extension<P: AsRef<Path>>(
+    path: P,
+  ) -> result::Result<Self, SaveFileInferError> {
+    path
+      .as_ref()
+      .extension()
+      .ok_or_else(|| SaveFileInferError::NoExtension)
+      .and_then(|ext| match ext.to_ascii_uppercase().to_str() {
+        Some("SRA") => Ok(SaveType::Sram),
+        Some("FLA") => Ok(SaveType::FlashRam),
+        Some("EEP") => Ok(SaveType::Eeprom),
+        Some("MPK" | "MPK1") => Ok(SaveType::ControllerPack(ControllerPackKind::Player1)),
+        Some("MPK2") => Ok(SaveType::ControllerPack(ControllerPackKind::Player2)),
+        Some("MPK3") => Ok(SaveType::ControllerPack(ControllerPackKind::Player3)),
+        Some("MPK4") => Ok(SaveType::ControllerPack(ControllerPackKind::Player4)),
+        Some("SRM") => Err(SaveFileInferError::IsAnSrmFile),
+        _ => Err(SaveFileInferError::UnknownFile),
+      })
+      .map(|save_type| Self {
+        save_type,
+        file: path.as_ref().to_path_buf(),
+      })
+  }
+}
+
+impl TryFrom<&str> for SaveFile {
+  type Error = SaveFileInferError;
+
+  fn try_from(value: &str) -> result::Result<Self, Self::Error> {
+    Self::from_extension(Path::new(value))
+  }
+}
+
+/// Defines a [SaveFile] inference error
+#[derive(Debug)]
+pub enum SaveFileInferError {
+  /// The specified file is an SRM file
+  IsAnSrmFile,
+  /// The specified file is unknown
+  UnknownFile,
+  /// The specified path did not contain a file extension
+  NoExtension,
+  /// An Io error
+  IoError(io::Error),
+}
+impl From<io::Error> for SaveFileInferError {
+  fn from(value: io::Error) -> Self {
+    Self::IoError(value)
+  }
+}
+impl fmt::Display for SaveFileInferError {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self {
+      Self::IsAnSrmFile => f.write_str("is an SRM save"),
+      Self::UnknownFile => f.write_str("unknown save file"),
+      Self::NoExtension => f.write_str("path did not have a known extension"),
+      Self::IoError(err) => f.write_fmt(format_args!("{err}")),
+    }
+  }
+}
+impl error::Error for SaveFileInferError {}
+
+impl TryFrom<PathBuf> for SaveFile {
+  type Error = SaveFileInferError;
+
+  fn try_from(path: PathBuf) -> result::Result<Self, SaveFileInferError> {
+    if path.exists() {
+      Self::from_file_len(&path).or_else(|_| Self::from_extension(path))
+    } else {
+      Self::from_extension(path)
+    }
+  }
+}
+impl Deref for SaveFile {
+  type Target = Path;
+
+  fn deref(&self) -> &Self::Target {
+    &self.file
+  }
+}
+impl AsRef<Path> for SaveFile {
+  fn as_ref(&self) -> &Path {
+    &self.file
+  }
+}
+impl From<SaveFile> for PathBuf {
+  fn from(value: SaveFile) -> Self {
+    value.file
   }
 }
 
@@ -472,22 +438,20 @@ pub struct BaseArgs {
   pub output_dir: Option<PathBuf>,
 }
 
-/// Proceeds to convert based on the parameters
+/// Converts to/from SRM files based on the parameters
 pub fn convert(params: ConvertParams, args: &BaseArgs) -> Result {
-  let ConvertParams { mode, paths } = params;
-
-  let mode = mode.expect("the mode should have been validated");
-  let mode_str = format!("{mode}");
+  let mode_str = format!("{params}");
+  let ConvertParams { mode, file, paths } = params;
   match mode {
-    ConvertMode::Create(output_path) => {
+    ConvertMode::Create => {
       if args.merge_mempacks {
         info!("{mode_str} using {paths:#}");
       } else {
         info!("{mode_str} using {paths}");
       }
-      create_srm::create_srm(output_path, args, paths)
+      create_srm::create_srm(file, args, paths)
     }
-    ConvertMode::Split(input_path) => {
+    ConvertMode::Split => {
       if paths.any_is_file() {
         if args.merge_mempacks {
           info!("{mode_str} into: {paths:#}")
@@ -495,171 +459,14 @@ pub fn convert(params: ConvertParams, args: &BaseArgs) -> Result {
           info!("{mode_str} into: {paths}")
         };
       }
-      split_srm::split_srm(input_path, args, paths)
+      split_srm::split_srm(file, args, paths)
     }
   }
 }
 
 #[cfg(test)]
 mod tests {
-  use crate::{ControllerPackKind, ConvertMode, ConvertParams, GroupOpts, SaveType, SrmPaths};
-
-  pub(crate) type SaveFlag = u8;
-  pub(crate) trait SaveFlagExt {
-    const EEP: SaveFlag = 0x1;
-    const FLA: SaveFlag = 0x2;
-    const SRA: SaveFlag = 0x4;
-    const CP1: SaveFlag = 0x08;
-    const CP2: SaveFlag = 0x10;
-    const CP3: SaveFlag = 0x20;
-    const CP4: SaveFlag = 0x40;
-    const CP: SaveFlag = Self::CP1 | Self::CP2 | Self::CP3 | Self::CP4;
-    const ALL: SaveFlag = Self::EEP | Self::FLA | Self::SRA | Self::CP;
-  }
-  impl SaveFlagExt for SaveFlag {}
-
-  pub(crate) fn test_for_none(paths: &SrmPaths, save_flags: SaveFlag) {
-    if save_flags & SaveFlag::CP1 == SaveFlag::CP1 {
-      assert_eq!(paths.cp[0], None);
-    }
-    if save_flags & SaveFlag::CP2 == SaveFlag::CP2 {
-      assert_eq!(paths.cp[1], None);
-    }
-    if save_flags & SaveFlag::CP3 == SaveFlag::CP3 {
-      assert_eq!(paths.cp[2], None);
-    }
-    if save_flags & SaveFlag::CP4 == SaveFlag::CP4 {
-      assert_eq!(paths.cp[3], None);
-    }
-    if save_flags & SaveFlag::EEP == SaveFlag::EEP {
-      assert_eq!(paths.eep, None);
-    }
-    if save_flags & SaveFlag::SRA == SaveFlag::SRA {
-      assert_eq!(paths.sra, None);
-    }
-    if save_flags & SaveFlag::FLA == SaveFlag::FLA {
-      assert_eq!(paths.fla, None);
-    }
-  }
 
   #[test]
-  fn verify_convert_args() -> std::io::Result<()> {
-    let mut args = ConvertParams::default();
-
-    assert_eq!(args.mode, None);
-    assert!(args.paths.is_empty());
-
-    // test first srm add
-    let save_path = args.add("A.srm".into(), GroupOpts::Automatic(false))?;
-    assert_eq!(save_path.0, SaveType::Srm);
-    assert_eq!(save_path.1, None);
-
-    assert_eq!(args.mode, Some(ConvertMode::Split("A.srm".into())));
-    assert!(args.paths.is_empty());
-
-    // test replace srm
-    let save_path = args.add("B.srm".into(), GroupOpts::Automatic(false))?;
-    assert_eq!(save_path.0, SaveType::Srm);
-    assert_eq!(save_path.1, Some("A.srm".into()));
-
-    assert_eq!(args.mode, Some(ConvertMode::Split("B.srm".into())));
-    assert!(args.paths.is_empty());
-
-    // test non-srm on empty
-    std::mem::take(&mut args);
-    assert_eq!(args.mode, None);
-    assert!(args.paths.is_empty());
-
-    let save_path = args.add("A.mpk".into(), GroupOpts::Automatic(false))?;
-    assert_eq!(
-      save_path.0,
-      SaveType::ControllerPack(ControllerPackKind::Player1)
-    );
-    assert_eq!(save_path.1, None);
-
-    assert_eq!(args.mode, None);
-    assert!(!args.paths.is_empty());
-    test_for_none(&args.paths, SaveFlag::ALL & !SaveFlag::CP1);
-
-    // test replace mkp1
-    let save_path = args.add("B.mpk1".into(), GroupOpts::Automatic(false))?;
-    assert_eq!(
-      save_path.0,
-      SaveType::ControllerPack(ControllerPackKind::Player1)
-    );
-    assert_eq!(save_path.1, Some("A.mpk".into()));
-
-    assert_eq!(args.mode, None);
-    assert!(!args.paths.is_empty());
-    test_for_none(&args.paths, SaveFlag::ALL & !SaveFlag::CP1);
-
-    // test add mpk3
-    let save_path = args.add("X.mpk3".into(), GroupOpts::Automatic(false))?;
-    assert_eq!(
-      save_path.0,
-      SaveType::ControllerPack(ControllerPackKind::Player3)
-    );
-    assert_eq!(save_path.1, None);
-
-    assert_eq!(args.mode, None);
-    assert!(!args.paths.is_empty());
-    test_for_none(&args.paths, SaveFlag::ALL & !SaveFlag::CP1 & !SaveFlag::CP3);
-
-    // test add srm after file
-    let save_path = args.add("A.srm".into(), GroupOpts::Automatic(false))?;
-    assert_eq!(save_path.0, SaveType::Srm);
-    assert_eq!(save_path.1, None);
-
-    assert_eq!(args.mode, Some(ConvertMode::Create("A.srm".into())));
-    assert!(!args.paths.is_empty());
-    test_for_none(&args.paths, SaveFlag::ALL & !SaveFlag::CP1 & !SaveFlag::CP3);
-
-    // test replace with mupen mpk
-    let save_path = args.add("M.mpk4".into(), GroupOpts::Automatic(true))?;
-    assert_eq!(
-      save_path.0,
-      SaveType::ControllerPack(ControllerPackKind::Mupen)
-    );
-    assert_eq!(save_path.1, Some("B.mpk1".into()));
-
-    assert_eq!(args.mode, Some(ConvertMode::Create("A.srm".into())));
-    assert!(!args.paths.is_empty());
-    test_for_none(&args.paths, SaveFlag::ALL & !SaveFlag::CP1);
-
-    // reset
-    std::mem::take(&mut args);
-    assert_eq!(args.mode, None);
-
-    // test forced create/split replacement
-    let save_path = args.add("A.srm".into(), GroupOpts::ForceCreate(false))?;
-    assert_eq!(save_path.0, SaveType::Srm);
-    assert_eq!(save_path.1, None);
-
-    assert_eq!(args.mode, Some(ConvertMode::Create("A.srm".into())));
-    assert!(args.paths.is_empty());
-
-    let save_path = args.add("B.srm".into(), GroupOpts::ForceSplit(false))?;
-    assert_eq!(save_path.0, SaveType::Srm);
-    assert_eq!(save_path.1, Some("A.srm".into()));
-
-    assert_eq!(args.mode, Some(ConvertMode::Split("B.srm".into())));
-    assert!(args.paths.is_empty());
-
-    let save_path = args.add("A.srm".into(), GroupOpts::ForceCreate(false))?;
-    assert_eq!(save_path.0, SaveType::Srm);
-    assert_eq!(save_path.1, Some("B.srm".into()));
-
-    assert_eq!(args.mode, Some(ConvertMode::Create("A.srm".into())));
-    assert!(args.paths.is_empty());
-
-    // An auto should only change the path
-    let save_path = args.add("B.srm".into(), GroupOpts::Automatic(false))?;
-    assert_eq!(save_path.0, SaveType::Srm);
-    assert_eq!(save_path.1, Some("A.srm".into()));
-
-    assert_eq!(args.mode, Some(ConvertMode::Create("B.srm".into())));
-    assert!(args.paths.is_empty());
-
-    Ok(())
-  }
+  fn verify_save_file_try_from() {}
 }

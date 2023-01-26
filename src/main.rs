@@ -8,7 +8,7 @@ use clap::Parser;
 use log::{debug, error, info};
 
 use ramp64_srm_convert_lib::{
-  convert, group_saves, validate_groups, BaseArgs, ConvertMode, GroupOpts, Problem,
+  convert, group_saves, validate_groups, BaseArgs, ConvertMode, Grouping, Problem,
 };
 
 use simplelog::SimpleLogger;
@@ -88,25 +88,16 @@ fn main() -> ExitCode {
   }
 
   debug!("\n--- Grouping file(s) ---");
-  let mut groups = group_saves(std::mem::take(&mut args.files), {
+  let groups = group_saves(std::mem::take(&mut args.files), {
     if args.create_srm {
-      GroupOpts::ForceCreate(args.base.merge_mempacks)
+      Grouping::force_create()
     } else if args.split_srm {
-      GroupOpts::ForceSplit(args.base.merge_mempacks)
+      Grouping::force_split()
     } else {
-      GroupOpts::Automatic(args.base.merge_mempacks)
+      Grouping::automatic()
     }
+    .set_merge_controller_pack(args.base.merge_mempacks)
   });
-
-  // if auto or create, set the srm file name if missing
-  if !args.split_srm {
-    for (name, value) in &mut groups {
-      value.get_or_set_mode(|| {
-        debug!("> Group \"{name}\": Will Create SRM");
-        ConvertMode::Create(PathBuf::from(name.as_str()).with_extension("srm"))
-      });
-    }
-  }
 
   debug!("\n--- Validating group(s) ---");
 
@@ -116,8 +107,7 @@ fn main() -> ExitCode {
     for entry in invalid_groups {
       let name = entry.group_name();
       match (entry.mode(), entry.problem()) {
-        (None, _) => error!("Group \"{name}\": Missing SRM file"),
-        (Some(ConvertMode::Create(_)), problem) => match problem {
+        (ConvertMode::Create, problem) => match problem {
           Problem::NoInput => error!("Group \"{name}\": Cannot create SRM: no input files"),
           Problem::FileDoesNotExist(files) => {
             error!("Group \"{name}\": Cannot create SRM: the following file(s) do not exist");
@@ -127,18 +117,18 @@ fn main() -> ExitCode {
           }
           Problem::NotAFile => unreachable!(),
         },
-        (Some(ConvertMode::Split(file)), problem) => match problem {
+        (ConvertMode::Split, problem) => match problem {
           Problem::NoInput => unreachable!(),
           Problem::FileDoesNotExist(_) => {
             error!(
               "Group \"{name}\": Cannot split SRM: {} does not exist",
-              file.display()
+              entry.srm_file().display()
             )
           }
           Problem::NotAFile => {
             error!(
               "Group \"{name}\": Cannot split SRM: {} is not a file",
-              file.display()
+              entry.srm_file().display()
             )
           }
         },

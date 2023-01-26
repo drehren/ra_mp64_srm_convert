@@ -6,6 +6,7 @@ use std::{
   error::Error,
   ffi::OsString,
   fmt::Display,
+  fs,
   io::Cursor,
   path::{Path, PathBuf},
   process::Command,
@@ -225,6 +226,13 @@ impl CmdOptions {
     self.change_endianness = save_type.is_big_endian();
     self.merge_mempacks = save_type == &SaveType::MupenControllerPack;
     self
+  }
+
+  fn set_merge_mempacks(self, merge_mempacks: bool) -> Self {
+    Self {
+      merge_mempacks,
+      ..self
+    }
   }
 
   fn set_overwrite(mut self, overwrite: bool) -> Self {
@@ -494,6 +502,118 @@ fn split_srm_test() -> TestResult<()> {
   Ok(())
 }
 
+#[derive(Debug)]
+struct NonMupenMpkFileError(PathBuf);
+impl Display for NonMupenMpkFileError {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_fmt(format_args!(
+      "{} is not a Mupen64 Mempack file",
+      self.0.display()
+    ))
+  }
+}
+impl Error for NonMupenMpkFileError {}
+
+#[test]
+fn verify_split_srm_mupen_mempack() -> TestResult<()> {
+  let data = DataPrepare::new()?;
+
+  let srm_files = data.get_saves(&SaveType::Srm)?;
+
+  let split_run = run(
+    &srm_files,
+    data.test_data_dir(),
+    CmdOptions::new(CmdMode::Auto)
+      .set_merge_mempacks(true)
+      .set_out_dir(data.out_dir()),
+  )?;
+
+  split_run.success();
+
+  // now check the files in the output directory...
+
+  let mut map = HashMap::<OsString, Vec<PathBuf>>::new();
+
+  for entry in data.out_dir().read_dir()? {
+    let entry = entry?;
+    if entry.file_type()?.is_file() {
+      let path = entry.path();
+      let Some(name) = path.file_stem() else {
+        continue;
+      };
+      // we cannot have non 128K mpkX files
+      if let Some("mpk" | "mpk1" | "mpk2" | "mpk3" | "mpk4") = path
+        .extension()
+        .expect("File should have an extension")
+        .to_str()
+      {
+        if fs::metadata(&path)?.len() != 0x20000 {
+          return Err(Box::new(NonMupenMpkFileError(path)));
+        }
+      }
+      let vec = map.entry(name.to_os_string()).or_default();
+      vec.push(entry.path());
+    }
+  }
+
+  assert!(map.len() >= srm_files.len());
+
+  for srm in srm_files {
+    let name = srm.file_stem().expect("srm without a name").to_os_string();
+    let Some(files) = map.get(&name) else {
+      return Err(Box::new(SrmWithoutOutputError{}));
+    };
+
+    let create_run = run(
+      files,
+      data.test_data_dir(),
+      CmdOptions::new(CmdMode::Create).set_out_dir(data.out_dir()),
+    )?;
+
+    create_run.success();
+
+    data
+      .out_dir()
+      .child({
+        let mut p = PathBuf::from(name);
+        p.set_extension("srm");
+        p
+      })
+      .assert(predicate::path::eq_file(srm));
+  }
+
+  Ok(())
+}
+
+#[test]
+fn verify_split_srm_mupen_mempack_2() -> TestResult<()> {
+  let data = DataPrepare::new()?;
+
+  let split_run = run(
+    &vec!["A.srm".into(), "F.mpk3".into()],
+    data.test_data_dir().child("auto"),
+    CmdOptions::new(CmdMode::Split)
+      .set_merge_mempacks(true)
+      .set_out_dir(data.out_dir()),
+  )?;
+
+  split_run.success();
+
+  let out_dir = data.out_dir();
+
+  out_dir.child("A.eep").assert(predicate::path::is_file());
+  out_dir.child("A.sra").assert(predicate::path::is_file());
+  out_dir.child("A.fla").assert(predicate::path::is_file());
+  out_dir.child("F.mpk3").assert(predicate::path::is_file());
+  out_dir.child("A.mpk").assert(predicate::path::missing());
+  out_dir.child("A.mpk1").assert(predicate::path::missing());
+  out_dir.child("A.mpk2").assert(predicate::path::missing());
+  out_dir.child("A.mpk3").assert(predicate::path::missing());
+  out_dir.child("A.mpk4").assert(predicate::path::missing());
+
+  Ok(())
+}
+
 #[test]
 fn verify_group_by_filename() -> TestResult<()> {
   let data = DataPrepare::new()?;
@@ -622,6 +742,151 @@ fn verify_split_srm() -> TestResult<()> {
   ] {
     out_dir.child(name).assert(predicate::path::is_file());
   }
+
+  Ok(())
+}
+
+#[test]
+fn verify_tl_dr_create_1() -> TestResult<()> {
+  let data = DataPrepare::new()?;
+
+  let in_saves = data.out_dir().child("auto");
+  in_saves.create_dir_all()?;
+  in_saves.copy_from(
+    {
+      let source = data.test_data_dir().child("auto");
+      source.assert(predicate::path::is_dir());
+      source
+    },
+    &["*"],
+  )?;
+
+  let mut input_files = Vec::with_capacity(9);
+  for name in ["B.mpk", "B.eep", "C.fla", "F.mpk3"] {
+    input_files.push(name.into());
+  }
+
+  let out_dir = data.out_dir().child("auto_out");
+
+  let create1_run = run(
+    &input_files,
+    in_saves,
+    CmdOptions::new(CmdMode::Create).set_out_dir(&out_dir),
+  )?;
+  create1_run.success();
+
+  out_dir.child("B.srm").assert(predicate::path::is_file());
+
+  Ok(())
+}
+
+#[test]
+fn verify_tl_dr_create_2() -> TestResult<()> {
+  let data = DataPrepare::new()?;
+
+  let in_saves = data.out_dir().child("auto");
+  in_saves.create_dir_all()?;
+  in_saves.copy_from(
+    {
+      let source = data.test_data_dir().child("auto");
+      source.assert(predicate::path::is_dir());
+      source
+    },
+    &["*"],
+  )?;
+
+  let mut input_files = Vec::with_capacity(9);
+  for name in ["B.mpk", "B.eep", "C.fla", "F.mpk3", "C.srm"] {
+    input_files.push(name.into());
+  }
+
+  let out_dir = data.out_dir().child("auto_out");
+
+  let create1_run = run(
+    &input_files,
+    in_saves,
+    CmdOptions::new(CmdMode::Create).set_out_dir(&out_dir),
+  )?;
+  create1_run.success();
+
+  out_dir.child("C.srm").assert(predicate::path::is_file());
+
+  Ok(())
+}
+
+#[test]
+fn verify_tl_dr_split_1() -> TestResult<()> {
+  let data = DataPrepare::new()?;
+
+  let in_saves = data.out_dir().child("auto");
+  in_saves.create_dir_all()?;
+  in_saves.copy_from(
+    {
+      let source = data.test_data_dir().child("auto");
+      source.assert(predicate::path::is_dir());
+      source
+    },
+    &["*"],
+  )?;
+
+  let input_files = vec!["A.srm".into()];
+
+  let out_dir = data.out_dir().child("auto_out");
+
+  let create1_run = run(
+    &input_files,
+    in_saves,
+    CmdOptions::new(CmdMode::Split).set_out_dir(&out_dir),
+  )?;
+  create1_run.success();
+
+  out_dir.child("A.eep").assert(predicate::path::is_file());
+  out_dir.child("A.sra").assert(predicate::path::is_file());
+  out_dir.child("A.fla").assert(predicate::path::is_file());
+  out_dir.child("A.mpk1").assert(predicate::path::is_file());
+  out_dir.child("A.mpk2").assert(predicate::path::is_file());
+  out_dir.child("A.mpk3").assert(predicate::path::is_file());
+  out_dir.child("A.mpk4").assert(predicate::path::is_file());
+
+  Ok(())
+}
+
+#[test]
+fn verify_tl_dr_split_2() -> TestResult<()> {
+  let data = DataPrepare::new()?;
+
+  let in_saves = data.out_dir().child("auto");
+  in_saves.create_dir_all()?;
+  in_saves.copy_from(
+    {
+      let source = data.test_data_dir().child("auto");
+      source.assert(predicate::path::is_dir());
+      source
+    },
+    &["*"],
+  )?;
+
+  let mut input_files = Vec::with_capacity(9);
+  for name in ["B.mpk", "B.eep", "C.fla", "F.mpk3", "A.srm"] {
+    input_files.push(name.into());
+  }
+
+  let out_dir = data.out_dir().child("auto_out");
+
+  let create1_run = run(
+    &input_files,
+    in_saves,
+    CmdOptions::new(CmdMode::Split).set_out_dir(&out_dir),
+  )?;
+  create1_run.success();
+
+  out_dir.child("B.eep").assert(predicate::path::is_file());
+  out_dir.child("A.sra").assert(predicate::path::is_file());
+  out_dir.child("C.fla").assert(predicate::path::is_file());
+  out_dir.child("B.mpk").assert(predicate::path::is_file());
+  out_dir.child("A.mpk2").assert(predicate::path::is_file());
+  out_dir.child("F.mpk3").assert(predicate::path::is_file());
+  out_dir.child("A.mpk4").assert(predicate::path::is_file());
 
   Ok(())
 }

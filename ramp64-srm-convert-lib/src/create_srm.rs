@@ -1,28 +1,28 @@
 use std::fs::File;
 use std::io::{Read, Write};
-use std::path::PathBuf;
 
 use crate::retroarch_srm::RetroArchSrm;
-use crate::{change_endianness, BaseArgs, OutputDir, PathError, Result, SrmPaths};
+use crate::SrmFile;
+use crate::{change_endianness, convert_params::SrmPaths, BaseArgs, OutputDir, PathError, Result};
 
 macro_rules! read_battery {
   ($path_opt:expr, $battery:expr) => {{
     $path_opt.map_or(Ok(()), |path| {
       File::open(&path)
         .and_then(|mut f| f.read_exact($battery.as_mut()))
-        .or_else(|e| Err(PathError(path, e)))
+        .or_else(|e| Err(PathError(path.into(), e)))
     })
   }};
 }
 
-pub(crate) fn create_srm(output_path: PathBuf, args: &BaseArgs, input: SrmPaths) -> Result {
+pub(crate) fn create_srm(output_path: SrmFile, args: &BaseArgs, input: SrmPaths) -> Result {
   let mut srm = Box::new(RetroArchSrm::new_init());
 
   // If the srm file exists, read it first to update
   if output_path.is_file() {
     File::open(&output_path)
       .and_then(|mut f| f.read_exact(srm.as_mut().as_mut()))
-      .or_else(|e| Err(PathError(output_path.clone(), e)))?;
+      .or_else(|e| Err(PathError(output_path.clone().into(), e)))?;
   }
 
   if let Some(path) = input.eep {
@@ -38,7 +38,7 @@ pub(crate) fn create_srm(output_path: PathBuf, args: &BaseArgs, input: SrmPaths)
   }
 
   if args.merge_mempacks {
-    if let [Some(cp_path), _, _, _] = input.cp {
+    if let [Some(cp_path), ..] = input.cp {
       File::open(&cp_path)
         .and_then(|mut f| {
           for i in 0..4 {
@@ -46,7 +46,7 @@ pub(crate) fn create_srm(output_path: PathBuf, args: &BaseArgs, input: SrmPaths)
           }
           Ok(())
         })
-        .or_else(|e| Err(PathError(cp_path, e)))?;
+        .or_else(|e| Err(PathError(cp_path.into(), e)))?;
     }
   } else {
     for (i, cp_path) in input.cp.into_iter().enumerate() {
