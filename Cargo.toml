@@ -16,7 +16,7 @@ categories = ["command-line-utilities"]
 [dependencies]
 clap = { version = "4.1", features = ["derive"] }
 log = "0.4"
-ramp64-srm-convert-lib = { path = "ramp64-srm-convert-lib", version = "0.2" }
+ramp64-srm-convert-lib = { path = "ramp64-srm-convert-lib", version = "0.3" }
 simplelog = "0.12"
 
 [dev-dependencies]

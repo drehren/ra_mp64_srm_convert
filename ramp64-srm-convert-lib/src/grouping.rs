@@ -255,8 +255,8 @@ pub fn group_saves(files: Vec<PathBuf>, opts: Grouping) -> GroupedSaves {
             debug!("> Group \"{key}\": Default SRM");
             SrmFile::from_name(key)
           }),
-          paths,
-        ),
+        )
+        .set_paths(paths),
       )
     })
     .collect::<Vec<_>>();
@@ -325,10 +325,7 @@ mod tests {
   use std::path::Path;
 
   use crate::{
-    convert_params::{
-      tests::{test_for_none, SaveFlag, SaveFlagExt},
-      SrmPaths,
-    },
+    convert_params::tests::{test_for_none, SaveFlag, SaveFlagExt},
     grouping::{group_saves, validate_groups, Problem},
     ConvertMode, ConvertParams, Grouping,
   };
@@ -554,11 +551,11 @@ mod tests {
     let groups = GroupedSaves(vec![
       (
         "A".into(),
-        ConvertParams::new(ConvertMode::Split, "A".into(), SrmPaths::default()),
+        ConvertParams::new(ConvertMode::Split, "A".into()),
       ),
       (
         "B".into(),
-        ConvertParams::new(ConvertMode::Create, "B".into(), SrmPaths::default()),
+        ConvertParams::new(ConvertMode::Create, "B".into()),
       ),
     ]);
 

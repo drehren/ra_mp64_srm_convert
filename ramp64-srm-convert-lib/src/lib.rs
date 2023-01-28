@@ -56,7 +56,7 @@ impl fmt::Display for PathError {
         "unexpected end of file while reading {}",
         path.display()
       )),
-      _ => f.write_fmt(format_args!("{err} with {}", path.display())),
+      _ => f.write_fmt(format_args!("{err} ({})", path.display())),
     }
   }
 }
@@ -101,9 +101,11 @@ impl<'out, 'base> OutputDir<'out, 'base> {
 }
 
 /// Represents the kind of controller pack in use
-#[repr(i32)]
+#[repr(usize)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ControllerPackKind {
+  /// The merged controller pack used by Mupen64 input
+  Mupen,
   /// The controller pack attached to the first player
   Player1,
   /// The controller pack attached to the second player
@@ -112,8 +114,6 @@ pub enum ControllerPackKind {
   Player3,
   /// The controller pack attached to the fourth player
   Player4,
-  /// The merged controller pack used by Mupen64 input
-  Mupen,
 }
 
 impl From<usize> for ControllerPackKind {
@@ -127,22 +127,16 @@ impl From<usize> for ControllerPackKind {
     }
   }
 }
-
 impl From<ControllerPackKind> for usize {
   fn from(value: ControllerPackKind) -> Self {
-    if value == ControllerPackKind::Mupen {
-      return 0;
-    }
-    value as usize
+    (value as usize).saturating_sub(1)
   }
 }
-
 impl From<ControllerPackKind> for SaveType {
   fn from(value: ControllerPackKind) -> Self {
     Self::ControllerPack(value)
   }
 }
-
 impl From<Option<&ffi::OsStr>> for ControllerPackKind {
   fn from(value: Option<&ffi::OsStr>) -> Self {
     value.map_or(Self::Player1, |ext| {
@@ -157,7 +151,7 @@ impl From<Option<&ffi::OsStr>> for ControllerPackKind {
 }
 
 /// The save types handled by the program
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum SaveType {
   /// EEPROM save (4kbit or 16kbit)
   Eeprom,
@@ -167,6 +161,22 @@ pub enum SaveType {
   FlashRam,
   /// Controller/Memory Pack (256kbit)
   ControllerPack(ControllerPackKind),
+}
+
+impl SaveType {
+  /// Gets the extension of the specified [SaveType]
+  pub fn extension(&self) -> &str {
+    match self {
+      Self::Eeprom => "eep",
+      Self::Sram => "sra",
+      Self::FlashRam => "fla",
+      Self::ControllerPack(ControllerPackKind::Mupen) => "mpk",
+      Self::ControllerPack(ControllerPackKind::Player1) => "mpk1",
+      Self::ControllerPack(ControllerPackKind::Player2) => "mpk2",
+      Self::ControllerPack(ControllerPackKind::Player3) => "mpk3",
+      Self::ControllerPack(ControllerPackKind::Player4) => "mpk4",
+    }
+  }
 }
 
 impl fmt::Display for SaveType {
@@ -183,37 +193,19 @@ impl fmt::Display for SaveType {
   }
 }
 
-/// Specifies an [SrmFile] inference error
-#[derive(Debug)]
-pub enum SrmFileInferError {
-  /// The specified file was not of the expected size
-  InvalidSize,
-  /// The specified file did not contain the expected extension
-  InvalidExtension,
-  /// The specified path did not have an extension
-  NoExtension,
-  /// An Io error
-  Other(io::Error),
-}
-impl fmt::Display for SrmFileInferError {
-  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    match self {
-      Self::InvalidSize => f.write_str("invalid file size"),
-      Self::InvalidExtension => f.write_str("has not an SRM extension"),
-      Self::NoExtension => f.write_str("path did not have an extension"),
-      Self::Other(err) => f.write_fmt(format_args!("{err}")),
-    }
-  }
-}
-impl error::Error for SrmFileInferError {}
-
 /// Specifies a typed SRM file
 #[derive(Debug, PartialEq, Clone)]
 pub struct SrmFile(PathBuf);
 impl SrmFile {
+  /// Gets the extension of an [SrmFile]
+  pub fn extension(&self) -> &str {
+    "srm"
+  }
+
   fn from_name<S: AsRef<str>>(name: S) -> Self {
     Self(Path::new(name.as_ref()).with_extension("srm"))
   }
+
   fn from_file_len<P: AsRef<Path>>(path: P) -> result::Result<Self, SrmFileInferError> {
     fs::File::open(path.as_ref())
       .or_else(|e| Err(SrmFileInferError::Other(e)))
@@ -225,6 +217,7 @@ impl SrmFile {
         }
       })
   }
+
   fn from_extension<P: AsRef<Path>>(path: P) -> result::Result<Self, SrmFileInferError> {
     let path = path.as_ref();
     path
@@ -273,6 +266,30 @@ impl From<&str> for SrmFile {
   }
 }
 
+/// Specifies an [SrmFile] inference error
+#[derive(Debug)]
+pub enum SrmFileInferError {
+  /// The specified file was not of the expected size
+  InvalidSize,
+  /// The specified file did not contain the expected extension
+  InvalidExtension,
+  /// The specified path did not have an extension
+  NoExtension,
+  /// An Io error
+  Other(io::Error),
+}
+impl fmt::Display for SrmFileInferError {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self {
+      Self::InvalidSize => f.write_str("invalid file size"),
+      Self::InvalidExtension => f.write_str("has not an SRM extension"),
+      Self::NoExtension => f.write_str("path did not have an extension"),
+      Self::Other(err) => f.write_fmt(format_args!("{err}")),
+    }
+  }
+}
+impl error::Error for SrmFileInferError {}
+
 /// Defines an specific save file
 #[derive(Debug, Clone, PartialEq)]
 pub struct SaveFile {
@@ -281,6 +298,11 @@ pub struct SaveFile {
 }
 
 impl SaveFile {
+  /// Gets the [SaveType] of this [SaveFile]
+  pub fn save_type(&self) -> SaveType {
+    self.save_type
+  }
+
   pub(crate) fn is_controller_pack(&self) -> bool {
     match self.save_type {
       SaveType::ControllerPack(_) => true,
@@ -360,35 +382,6 @@ impl TryFrom<&str> for SaveFile {
   }
 }
 
-/// Defines a [SaveFile] inference error
-#[derive(Debug)]
-pub enum SaveFileInferError {
-  /// The specified file is an SRM file
-  IsAnSrmFile,
-  /// The specified file is unknown
-  UnknownFile,
-  /// The specified path did not contain a file extension
-  NoExtension,
-  /// An Io error
-  IoError(io::Error),
-}
-impl From<io::Error> for SaveFileInferError {
-  fn from(value: io::Error) -> Self {
-    Self::IoError(value)
-  }
-}
-impl fmt::Display for SaveFileInferError {
-  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    match self {
-      Self::IsAnSrmFile => f.write_str("is an SRM save"),
-      Self::UnknownFile => f.write_str("unknown save file"),
-      Self::NoExtension => f.write_str("path did not have a known extension"),
-      Self::IoError(err) => f.write_fmt(format_args!("{err}")),
-    }
-  }
-}
-impl error::Error for SaveFileInferError {}
-
 impl TryFrom<PathBuf> for SaveFile {
   type Error = SaveFileInferError;
 
@@ -417,6 +410,35 @@ impl From<SaveFile> for PathBuf {
     value.file
   }
 }
+
+/// Defines a [SaveFile] inference error
+#[derive(Debug)]
+pub enum SaveFileInferError {
+  /// The specified file is an SRM file
+  IsAnSrmFile,
+  /// The specified file is unknown
+  UnknownFile,
+  /// The specified path did not contain a file extension
+  NoExtension,
+  /// An Io error
+  IoError(io::Error),
+}
+impl From<io::Error> for SaveFileInferError {
+  fn from(value: io::Error) -> Self {
+    Self::IoError(value)
+  }
+}
+impl fmt::Display for SaveFileInferError {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self {
+      Self::IsAnSrmFile => f.write_str("is an SRM save"),
+      Self::UnknownFile => f.write_str("unknown save file"),
+      Self::NoExtension => f.write_str("path did not have a known extension"),
+      Self::IoError(err) => f.write_fmt(format_args!("{err}")),
+    }
+  }
+}
+impl error::Error for SaveFileInferError {}
 
 /// Basic common arguments for the conversion
 #[derive(Clone, clap::Args, Debug, Default)]
