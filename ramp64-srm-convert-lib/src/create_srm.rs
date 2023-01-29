@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 
 use crate::retroarch_srm::RetroArchSrm;
 use crate::SrmFile;
-use crate::{change_endianness, convert_params::SrmPaths, BaseArgs, OutputDir, PathError, Result};
+use crate::{word_byte_swap, convert_params::SrmPaths, BaseArgs, OutputDir, PathError, Result};
 
 macro_rules! read_battery {
   ($path_opt:expr, $battery:expr) => {{
@@ -33,8 +33,8 @@ pub(crate) fn create_srm(output_path: SrmFile, args: &BaseArgs, input: SrmPaths)
   read_battery!(input.fla, srm.flashram)?;
 
   if args.change_endianness {
-    change_endianness(srm.sram.as_mut());
-    change_endianness(srm.flashram.as_mut());
+    word_byte_swap(srm.sram.as_mut());
+    word_byte_swap(srm.flashram.as_mut());
   }
 
   if args.merge_mempacks {
@@ -55,7 +55,7 @@ pub(crate) fn create_srm(output_path: SrmFile, args: &BaseArgs, input: SrmPaths)
   }
 
   let out_dir = OutputDir::new(&args.output_dir, &output_path);
-  let out_path = out_dir.from_base("srm").to_path_buf();
+  let out_path = out_dir.base_with_extension("srm").to_path_buf();
   File::options()
     .create(args.overwrite)
     .create_new(!args.overwrite)

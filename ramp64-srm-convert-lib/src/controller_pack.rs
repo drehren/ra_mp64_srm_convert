@@ -170,7 +170,6 @@ impl Default for Page {
   }
 }
 
-#[derive(Default)]
 pub(crate) struct ControllerPackInitializer;
 impl ControllerPackInitializer {
   pub(crate) fn new() -> Self {

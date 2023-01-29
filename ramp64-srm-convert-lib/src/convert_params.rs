@@ -1,6 +1,11 @@
 use std::{fmt, path::Path};
 
-use crate::{ControllerPackKind, Problem, SaveFile, SaveType, SrmFile};
+use log::info;
+
+use crate::{
+  create_srm::create_srm, split_srm::split_srm, BaseArgs, ControllerPackKind, Problem, SaveFile,
+  SaveType, SrmFile,
+};
 
 macro_rules! display_some_path {
   ($c:expr, $f:expr, $name:expr, $path:expr) => {
@@ -14,12 +19,39 @@ macro_rules! display_some_path {
   };
 }
 
-/// Provides the parameter to apply a conversion
+/// Converts to/from SRM files based on the parameters
+/// 
+pub fn convert(params: ConvertParams, args: &BaseArgs) -> crate::Result {
+  let mode_str = format!("{params}");
+  let ConvertParams { mode, file, paths } = params;
+  match mode {
+    ConvertMode::Create => {
+      if args.merge_mempacks {
+        info!("{mode_str} using {paths:#}");
+      } else {
+        info!("{mode_str} using {paths}");
+      }
+      create_srm(file, args, paths)
+    }
+    ConvertMode::Split => {
+      if paths.any_is_file() {
+        if args.merge_mempacks {
+          info!("{mode_str} into: {paths:#}")
+        } else {
+          info!("{mode_str} into: {paths}")
+        };
+      }
+      split_srm(file, args, paths)
+    }
+  }
+}
+
+/// Provides the parameters to apply a conversion
 #[derive(Debug)]
 pub struct ConvertParams {
-  pub(crate) mode: ConvertMode,
-  pub(crate) file: SrmFile,
-  pub(crate) paths: SrmPaths,
+  mode: ConvertMode,
+  file: SrmFile,
+  paths: SrmPaths,
 }
 
 impl ConvertParams {
@@ -63,6 +95,11 @@ impl ConvertParams {
   /// ```
   pub fn mode(&self) -> &ConvertMode {
     &self.mode
+  }
+
+  ///
+  pub fn srm_file(&self) -> &SrmFile {
+    &self.file
   }
 
   /// Gets the [SaveFile] of the given [SaveType]
@@ -125,7 +162,24 @@ impl ConvertParams {
     std::mem::replace(&mut self.mode, mode)
   }
 
-  /// Replaces the current [`SrmFile`] with the given one
+  /// Replaces the current [`SrmFile`] with the given one, returning the old one
+  ///
+  /// # Arguments
+  ///
+  /// `srm_file` - The new [SrmFile] to perform the conversion
+  ///
+  /// # Returns
+  ///
+  /// The old [SrmFile]
+  ///
+  /// # Examples
+  /// ```
+  /// use ramp64_srm_convert_lib::{ConvertParams, ConvertMode};
+  ///
+  /// let mut params = ConvertParams::new(ConvertMode::Split, "old".into());
+  ///
+  /// assert_eq!(params.replace_srm_file("new".into()), "old".into());
+  /// ```
   pub fn replace_srm_file(&mut self, srm_file: SrmFile) -> SrmFile {
     std::mem::replace(&mut self.file, srm_file)
   }
@@ -140,7 +194,8 @@ impl ConvertParams {
     self.paths.unset(save_type)
   }
 
-  pub(crate) fn validate(&self) -> Option<Problem<'_>> {
+  /// Validates the current parameters, returning an existing possible problem
+  pub fn validate(&self) -> Option<Problem<'_>> {
     match self.mode {
       ConvertMode::Create => {
         if self.paths.is_empty() {
@@ -312,7 +367,11 @@ pub(super) mod tests {
   }
   impl SaveFlagExt for SaveFlag {}
 
-  pub(crate) fn test_for_none(paths: &SrmPaths, save_flags: SaveFlag) {
+  pub(crate) fn check_empty_files(params: &ConvertParams, save_flags: SaveFlag) {
+    check_paths(&params.paths, save_flags)
+  }
+
+  fn check_paths(paths: &SrmPaths, save_flags: SaveFlag) {
     if save_flags & SaveFlag::CP1 == SaveFlag::CP1 {
       assert_eq!(paths.cp[0], None);
     }
@@ -353,21 +412,21 @@ pub(super) mod tests {
     assert_eq!(paths.set(mpk.clone()), None);
 
     assert!(!paths.is_empty());
-    test_for_none(&paths, SaveFlag::ALL & !SaveFlag::CP1);
+    check_paths(&paths, SaveFlag::ALL & !SaveFlag::CP1);
 
     // test replace mkp1
     let mpk1: SaveFile = "B.mpk1".try_into().expect("Save name is valid");
     assert_eq!(paths.set(mpk1.clone()), Some(mpk));
 
     assert!(!paths.is_empty());
-    test_for_none(&paths, SaveFlag::ALL & !SaveFlag::CP1);
+    check_paths(&paths, SaveFlag::ALL & !SaveFlag::CP1);
 
     // test add mpk3
     let mpk3: SaveFile = "X.mpk3".try_into().expect("Save name is valid");
     assert_eq!(paths.set(mpk3.clone()), None);
 
     assert!(!paths.is_empty());
-    test_for_none(&paths, SaveFlag::ALL & !SaveFlag::CP1 & !SaveFlag::CP3);
+    check_paths(&paths, SaveFlag::ALL & !SaveFlag::CP1 & !SaveFlag::CP3);
 
     // test replace with mupen mpk
     let mut mpk: SaveFile = "M.mpk4".try_into().expect("Save name is valid");
@@ -375,7 +434,7 @@ pub(super) mod tests {
     assert_eq!(paths.set(mpk), Some(mpk1));
 
     assert!(!paths.is_empty());
-    test_for_none(&paths, SaveFlag::ALL & !SaveFlag::CP1);
+    check_paths(&paths, SaveFlag::ALL & !SaveFlag::CP1);
   }
 
   #[test]
@@ -476,7 +535,7 @@ pub(super) mod tests {
     assert_eq!(params.set_or_replace_file(cp_new.clone()), Some(cp));
     assert_eq!(params.save_file(Mupen.into()), &Some(cp_new));
 
-    test_for_none(&params.paths, SaveFlag::ALL & !SaveFlag::CP1);
+    check_paths(&params.paths, SaveFlag::ALL & !SaveFlag::CP1);
   }
 
   #[test]

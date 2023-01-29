@@ -21,19 +21,17 @@ use std::{
 };
 
 use controller_pack::ControllerPack;
-pub use convert_params::{ConvertMode, ConvertParams};
+pub use convert_params::{convert, ConvertMode, ConvertParams};
 pub use grouping::{group_saves, validate_groups, GroupedSaves, Grouping, InvalidGroup, Problem};
 
-use log::info;
-
-fn change_endianness(buf: &mut [u8]) {
+fn word_byte_swap(buf: &mut [u8]) {
   for i in (0..buf.len()).step_by(4) {
     buf.swap(i + 0, i + 3);
     buf.swap(i + 1, i + 2);
   }
 }
 
-/// Provides the path of the error
+/// Provides the path to which the error originated from
 #[derive(Debug)]
 pub struct PathError(PathBuf, io::Error);
 
@@ -73,7 +71,7 @@ impl<'out, 'base> OutputDir<'out, 'base> {
     Self { out_dir, base }
   }
 
-  fn output_path<P>(&self, input: &P) -> PathBuf
+  fn to_out_dir<P>(&self, input: &P) -> PathBuf
   where
     P: AsRef<Path> + ?Sized,
   {
@@ -82,25 +80,22 @@ impl<'out, 'base> OutputDir<'out, 'base> {
       return input.into();
     }
     let file_name = input.file_name().unwrap_or(&ffi::OsStr::new(""));
-    let mut path: PathBuf = if let Some(out_dir) = self.out_dir {
-      out_dir
-    } else {
-      self.base.parent().unwrap()
+    match self.out_dir {
+      Some(path) => path.as_path(),
+      None => self.base.parent().unwrap(),
     }
-    .into();
-    path.push(file_name);
-    path
+    .join(file_name)
   }
 
-  fn from_base<S>(&self, ext: &S) -> PathBuf
+  fn base_with_extension<S>(&self, ext: &S) -> PathBuf
   where
     S: AsRef<ffi::OsStr> + ?Sized,
   {
-    self.output_path(self.base.with_extension(ext).file_name().unwrap())
+    self.to_out_dir(self.base.with_extension(ext).file_name().unwrap())
   }
 }
 
-/// Represents the kind of controller pack in use
+/// Represents the controller pack
 #[repr(usize)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ControllerPackKind {
@@ -254,7 +249,7 @@ impl TryFrom<PathBuf> for SrmFile {
 
   fn try_from(path: PathBuf) -> result::Result<Self, Self::Error> {
     if path.exists() {
-      Self::from_file_len(&path).or_else(|_| Self::from_extension(path))
+      Self::from_file_len(&path)
     } else {
       Self::from_extension(path)
     }
@@ -311,7 +306,7 @@ impl SaveFile {
   }
 
   pub(crate) fn from_file_len<P: AsRef<Path>>(path: P) -> result::Result<Self, SaveFileInferError> {
-    fs::File::open(path.as_ref())
+    fs::File::open(&path)
       .or_else(|e| Err(e.into()))
       .and_then(|mut file| {
         match file.metadata().unwrap().len() {
@@ -387,7 +382,7 @@ impl TryFrom<PathBuf> for SaveFile {
 
   fn try_from(path: PathBuf) -> result::Result<Self, SaveFileInferError> {
     if path.exists() {
-      Self::from_file_len(&path).or_else(|_| Self::from_extension(path))
+      Self::from_file_len(&path)
     } else {
       Self::from_extension(path)
     }
@@ -460,35 +455,421 @@ pub struct BaseArgs {
   pub output_dir: Option<PathBuf>,
 }
 
-/// Converts to/from SRM files based on the parameters
-pub fn convert(params: ConvertParams, args: &BaseArgs) -> Result {
-  let mode_str = format!("{params}");
-  let ConvertParams { mode, file, paths } = params;
-  match mode {
-    ConvertMode::Create => {
-      if args.merge_mempacks {
-        info!("{mode_str} using {paths:#}");
-      } else {
-        info!("{mode_str} using {paths}");
-      }
-      create_srm::create_srm(file, args, paths)
-    }
-    ConvertMode::Split => {
-      if paths.any_is_file() {
-        if args.merge_mempacks {
-          info!("{mode_str} into: {paths:#}")
-        } else {
-          info!("{mode_str} into: {paths}")
-        };
-      }
-      split_srm::split_srm(file, args, paths)
-    }
-  }
-}
-
 #[cfg(test)]
 mod tests {
+  use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+  };
+
+  use assert_fs::prelude::{PathAssert, PathChild};
+
+  use crate::{
+    controller_pack::{ControllerPack, ControllerPackInitializer},
+    retroarch_srm::RetroArchSrm,
+    word_byte_swap, ControllerPackKind, OutputDir, SaveFile, SaveType, SrmFile,
+  };
 
   #[test]
-  fn verify_save_file_try_from() {}
+  fn verify_save_file_try_from_str() {
+    let eep: SaveFile = "simple.eep".try_into().unwrap();
+    assert_eq!(
+      eep,
+      SaveFile {
+        save_type: SaveType::Eeprom,
+        file: "simple.eep".into()
+      }
+    );
+
+    let sra: SaveFile = "simple.sra".try_into().unwrap();
+    assert_eq!(
+      sra,
+      SaveFile {
+        save_type: SaveType::Sram,
+        file: "simple.sra".into()
+      }
+    );
+
+    let fla: SaveFile = "simple.fla".try_into().unwrap();
+    assert_eq!(
+      fla,
+      SaveFile {
+        save_type: SaveType::FlashRam,
+        file: "simple.fla".into()
+      }
+    );
+
+    let mpk: SaveFile = "simple.mpk".try_into().unwrap();
+    assert_eq!(
+      mpk,
+      SaveFile {
+        save_type: SaveType::ControllerPack(ControllerPackKind::Player1),
+        file: "simple.mpk".into()
+      }
+    );
+
+    let mpk1: SaveFile = "simple.mpk1".try_into().unwrap();
+    assert_eq!(
+      mpk1,
+      SaveFile {
+        save_type: SaveType::ControllerPack(ControllerPackKind::Player1),
+        file: "simple.mpk1".into()
+      }
+    );
+
+    let mpk2: SaveFile = "simple.mpk2".try_into().unwrap();
+    assert_eq!(
+      mpk2,
+      SaveFile {
+        save_type: SaveType::ControllerPack(ControllerPackKind::Player2),
+        file: "simple.mpk2".into()
+      }
+    );
+
+    let mpk3: SaveFile = "simple.mpk3".try_into().unwrap();
+    assert_eq!(
+      mpk3,
+      SaveFile {
+        save_type: SaveType::ControllerPack(ControllerPackKind::Player3),
+        file: "simple.mpk3".into()
+      }
+    );
+
+    let mpk4: SaveFile = "simple.mpk4".try_into().unwrap();
+    assert_eq!(
+      mpk4,
+      SaveFile {
+        save_type: SaveType::ControllerPack(ControllerPackKind::Player4),
+        file: "simple.mpk4".into()
+      }
+    );
+  }
+
+  #[test]
+  fn verify_save_file_try_from_path() {
+    let eep: SaveFile = PathBuf::from("simple.eep").try_into().unwrap();
+    assert_eq!(
+      eep,
+      SaveFile {
+        save_type: SaveType::Eeprom,
+        file: "simple.eep".into()
+      }
+    );
+
+    let sra: SaveFile = PathBuf::from("simple.sra").try_into().unwrap();
+    assert_eq!(
+      sra,
+      SaveFile {
+        save_type: SaveType::Sram,
+        file: "simple.sra".into()
+      }
+    );
+
+    let fla: SaveFile = PathBuf::from("simple.fla").try_into().unwrap();
+    assert_eq!(
+      fla,
+      SaveFile {
+        save_type: SaveType::FlashRam,
+        file: "simple.fla".into()
+      }
+    );
+
+    let mpk: SaveFile = PathBuf::from("simple.mpk").try_into().unwrap();
+    assert_eq!(
+      mpk,
+      SaveFile {
+        save_type: SaveType::ControllerPack(ControllerPackKind::Player1),
+        file: "simple.mpk".into()
+      }
+    );
+
+    let mpk1: SaveFile = PathBuf::from("simple.mpk1").try_into().unwrap();
+    assert_eq!(
+      mpk1,
+      SaveFile {
+        save_type: SaveType::ControllerPack(ControllerPackKind::Player1),
+        file: "simple.mpk1".into()
+      }
+    );
+
+    let mpk2: SaveFile = PathBuf::from("simple.mpk2").try_into().unwrap();
+    assert_eq!(
+      mpk2,
+      SaveFile {
+        save_type: SaveType::ControllerPack(ControllerPackKind::Player2),
+        file: "simple.mpk2".into()
+      }
+    );
+
+    let mpk3: SaveFile = PathBuf::from("simple.mpk3").try_into().unwrap();
+    assert_eq!(
+      mpk3,
+      SaveFile {
+        save_type: SaveType::ControllerPack(ControllerPackKind::Player3),
+        file: "simple.mpk3".into()
+      }
+    );
+
+    let mpk4: SaveFile = PathBuf::from("simple.mpk4").try_into().unwrap();
+    assert_eq!(
+      mpk4,
+      SaveFile {
+        save_type: SaveType::ControllerPack(ControllerPackKind::Player4),
+        file: "simple.mpk4".into()
+      }
+    );
+  }
+
+  const DATA_BUF: &[u8] = &[5u8; 512];
+
+  #[test]
+  fn verify_eep_file_try_from() {
+    let tmp_dir = assert_fs::TempDir::new().expect("tmp dir should be created");
+
+    let file_4k = tmp_dir.child("save_4k_eep_no_ext");
+    std::fs::File::create(&file_4k)
+      .and_then(|mut f| f.write_all(&DATA_BUF))
+      .expect("4k file should have been written");
+
+    file_4k.assert(predicates::path::is_file());
+
+    let eep: SaveFile = file_4k.to_path_buf().try_into().unwrap();
+    assert_eq!(
+      eep,
+      SaveFile {
+        save_type: SaveType::Eeprom,
+        file: file_4k.to_path_buf()
+      }
+    );
+
+    let file_16k = tmp_dir.child("save_16k_eep_no_ext");
+    std::fs::File::create(&file_16k)
+      .map(|mut f| {
+        for _ in (0..0x800).step_by(512) {
+          f.write_all(&DATA_BUF).unwrap();
+        }
+      })
+      .expect("16k file should have been written");
+
+    let eep: SaveFile = file_16k.to_path_buf().try_into().unwrap();
+    assert_eq!(
+      eep,
+      SaveFile {
+        save_type: SaveType::Eeprom,
+        file: file_16k.to_path_buf()
+      }
+    );
+  }
+
+  #[test]
+  fn verify_sra_file_try_from() {
+    let tmp_dir = assert_fs::TempDir::new().expect("temp dir not created");
+
+    let file_path = tmp_dir.child("srm_file_no_ext");
+    fs::File::create(&file_path)
+      .map(|mut f| {
+        for _ in (0..0x8000).step_by(512) {
+          f.write_all(&DATA_BUF).unwrap();
+        }
+      })
+      .expect("could not create/write file");
+
+    let sra: SaveFile = file_path.to_path_buf().try_into().unwrap();
+    assert_eq!(
+      sra,
+      SaveFile {
+        save_type: SaveType::Sram,
+        file: file_path.to_path_buf()
+      }
+    )
+  }
+
+  #[test]
+  fn verify_fla_file_try_from() {
+    let tmp_dir = assert_fs::TempDir::new().expect("temp dir not created");
+
+    let file_path = tmp_dir.child("fla_file_no_ext");
+    fs::File::create(&file_path)
+      .map(|mut f| {
+        for _ in (0..0x20000).step_by(512) {
+          f.write_all(&DATA_BUF).unwrap();
+        }
+      })
+      .expect("could not create/write file");
+
+    let fla: SaveFile = file_path.to_path_buf().try_into().unwrap();
+    assert_eq!(
+      fla,
+      SaveFile {
+        save_type: SaveType::FlashRam,
+        file: file_path.to_path_buf(),
+      }
+    )
+  }
+
+  #[test]
+  fn verify_controller_pack_file_try_from() {
+    let tmp_dir = assert_fs::TempDir::new().expect("temp dir not created");
+
+    let file_path = tmp_dir.child("mpk_file_no_ext");
+    let mut cp_data = Box::new(ControllerPack::default());
+    ControllerPackInitializer::new().init(&mut cp_data);
+    fs::File::create(&file_path)
+      .and_then(|mut f| f.write_all(cp_data.as_ref().as_ref()))
+      .expect("could not create/write file");
+
+    let cp1: SaveFile = file_path.to_path_buf().try_into().unwrap();
+    assert_eq!(
+      cp1,
+      SaveFile {
+        save_type: ControllerPackKind::Player1.into(),
+        file: file_path.to_path_buf()
+      }
+    );
+
+    for i in 1..=4 {
+      let file_path = tmp_dir.child(format!("mpk_file.mpk{i}"));
+      fs::File::create(&file_path)
+        .and_then(|mut f| f.write_all(cp_data.as_ref().as_ref()))
+        .expect("could not create/write file");
+
+      let cp1: SaveFile = file_path.to_path_buf().try_into().unwrap();
+      assert_eq!(
+        cp1,
+        SaveFile {
+          save_type: SaveType::ControllerPack(i.into()),
+          file: file_path.to_path_buf()
+        }
+      );
+    }
+
+    // make first controller pack a mupen file and check
+    fs::File::create(&file_path)
+      .map(|mut f| {
+        for _ in 0..4 {
+          f.write_all(cp_data.as_ref().as_ref()).unwrap()
+        }
+      })
+      .expect("could not create/write file");
+
+    let mcp: SaveFile = file_path.to_path_buf().try_into().unwrap();
+    assert_eq!(
+      mcp,
+      SaveFile {
+        save_type: ControllerPackKind::Mupen.into(),
+        file: file_path.to_path_buf()
+      }
+    );
+  }
+
+  #[test]
+  fn verify_srm_file_try_into() {
+    let srm: SrmFile = "file".into();
+    assert_eq!(srm, SrmFile("file.srm".into()));
+
+    let srm: SrmFile = "file.srm".into();
+    assert_eq!(srm, SrmFile("file.srm".into()));
+
+    let tmp_dir = assert_fs::TempDir::new().expect("tmp dir not created");
+
+    let srm_path = tmp_dir.child("file.srm");
+
+    let srm: SrmFile = srm_path.to_path_buf().try_into().unwrap();
+    assert_eq!(srm, SrmFile(tmp_dir.join("file.srm")));
+
+    // remove srm extension
+    let srm_path = srm_path.with_extension("");
+
+    // put srm data...
+    fs::File::create(&srm_path)
+      .and_then(|mut f| {
+        let srm_data = Box::new(RetroArchSrm::new_init());
+        f.write_all(srm_data.as_ref().as_ref())
+      })
+      .expect("could not create/write srm file");
+
+    let srm: SrmFile = srm_path.try_into().expect("could not infer file");
+    assert_eq!(srm, SrmFile(tmp_dir.join("file")));
+  }
+
+  #[test]
+  fn verify_change_endianness() {
+    let mut bytes = [1, 2, 3, 4];
+    word_byte_swap(&mut bytes);
+    assert_eq!(bytes, [4, 3, 2, 1]);
+  }
+
+  #[test]
+  fn verify_output_dir_without_out_dir() {
+    let out_dir = None;
+    let base = Path::new("base");
+    let output = OutputDir::new(&out_dir, &base);
+
+    assert_eq!(output.base_with_extension("ext"), PathBuf::from("base.ext"));
+    assert_eq!(
+      output.to_out_dir("input/data.file"),
+      PathBuf::from("data.file")
+    );
+    // absolute paths are not changed
+    if cfg!(windows) {
+      assert_eq!(
+        output.to_out_dir("c:/input/data.file"),
+        PathBuf::from("c:/input/data.file")
+      );
+    } else {
+      assert_eq!(
+        output.to_out_dir("/input/data.file"),
+        PathBuf::from("/input/data.file")
+      );
+    }
+
+    let out_dir = None;
+    let base = Path::new("relative/base/file");
+    let output = OutputDir::new(&out_dir, &base);
+    assert_eq!(
+      output.base_with_extension("ext"),
+      PathBuf::from("relative/base/file.ext")
+    );
+    assert_eq!(
+      output.to_out_dir("input/data.file"),
+      PathBuf::from("relative/base/data.file")
+    );
+    // absolute paths are not changed
+    if cfg!(windows) {
+      assert_eq!(
+        output.to_out_dir("c:/input/data.file"),
+        PathBuf::from("c:/input/data.file")
+      );
+    } else {
+      assert_eq!(
+        output.to_out_dir("/input/data.file"),
+        PathBuf::from("/input/data.file")
+      );
+    }
+
+    let out_dir = Some("user/output/dir".into());
+    let base = Path::new("something/base_file.data");
+    let output = OutputDir::new(&out_dir, &base);
+    assert_eq!(
+      output.base_with_extension("ext"),
+      PathBuf::from("user/output/dir/base_file.ext")
+    );
+    assert_eq!(
+      output.to_out_dir("input/data.file"),
+      PathBuf::from("user/output/dir/data.file")
+    );
+    // absolute paths are not changed
+    if cfg!(windows) {
+      assert_eq!(
+        output.to_out_dir("c:/input/data.file"),
+        PathBuf::from("c:/input/data.file")
+      );
+    } else {
+      assert_eq!(
+        output.to_out_dir("/input/data.file"),
+        PathBuf::from("/input/data.file")
+      );
+    }
+  }
 }

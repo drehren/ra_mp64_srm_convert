@@ -13,7 +13,7 @@ use log::{debug, info, warn};
 /// The validation problem a group had
 #[derive(Debug, PartialEq, Eq)]
 pub enum Problem<'g> {
-  /// No input error
+  /// Missing input save files
   NoInput,
   /// Files do not exist
   FileDoesNotExist(Vec<&'g Path>),
@@ -64,7 +64,12 @@ pub fn validate_groups<'g>(groups: &'g GroupedSaves) -> Vec<InvalidGroup<'g>> {
   let mut invalid_groups = Vec::new();
   for (key, value) in groups {
     if let Some(problem) = value.validate() {
-      invalid_groups.push(InvalidGroup::new(key, &value.mode, &value.file, problem))
+      invalid_groups.push(InvalidGroup::new(
+        key,
+        value.mode(),
+        value.srm_file(),
+        problem,
+      ))
     }
   }
   invalid_groups
@@ -325,9 +330,9 @@ mod tests {
   use std::path::Path;
 
   use crate::{
-    convert_params::tests::{test_for_none, SaveFlag, SaveFlagExt},
+    convert_params::tests::{check_empty_files, SaveFlag, SaveFlagExt},
     grouping::{group_saves, validate_groups, Problem},
-    ConvertMode, ConvertParams, Grouping,
+    ControllerPackKind, ConvertMode, ConvertParams, Grouping, SaveType,
   };
 
   use super::GroupedSaves;
@@ -360,49 +365,43 @@ mod tests {
       match key {
         "A" | "C" => {
           // simple auto-name split
-          assert_eq!(value.mode, ConvertMode::Split);
-          assert_eq!(value.file, key.into());
-          assert!(value.paths.is_empty());
+          assert_eq!(value.mode(), &ConvertMode::Split);
+          assert_eq!(value.srm_file(), &key.into());
+          check_empty_files(&value, SaveFlag::ALL);
         }
         "B" => {
           // split to named mpk
-          assert_eq!(value.mode, ConvertMode::Split);
-          assert_eq!(value.file, key.into());
-          assert!(!value.paths.is_empty());
+          assert_eq!(value.mode(), &ConvertMode::Split);
+          assert_eq!(value.srm_file(), &key.into());
           assert_eq!(
-            value.paths.cp[0],
-            Some("B.mpk1".try_into().expect("File name is ok"))
+            value.save_file(ControllerPackKind::Player1.into()),
+            &Some("B.mpk1".try_into().expect("File name is ok"))
           );
-          test_for_none(&value.paths, SaveFlag::ALL & !SaveFlag::CP1);
+          check_empty_files(&value, SaveFlag::ALL & !SaveFlag::CP1);
         }
         "B1" => {
           // create from B1.eep, no srm given
-          assert_eq!(value.mode, ConvertMode::Create);
-          assert_eq!(value.file, key.into());
-          assert!(!value.paths.is_empty());
+          assert_eq!(value.mode(), &ConvertMode::Create);
+          assert_eq!(value.srm_file(), &key.into());
           assert_eq!(
-            value.paths.eep,
-            Some("B1.eep".try_into().expect("File name is ok"))
+            value.save_file(SaveType::Eeprom),
+            &Some("B1.eep".try_into().expect("File name is ok"))
           );
-          test_for_none(&value.paths, SaveFlag::ALL & !SaveFlag::EEP);
+          check_empty_files(&value, SaveFlag::ALL & !SaveFlag::EEP);
         }
         "D" => {
           // create from D.fla & folder/D.mpk, to D.srm
-          assert_eq!(value.mode, ConvertMode::Create);
-          assert_eq!(value.file, key.into());
-          assert!(!value.paths.is_empty());
+          assert_eq!(value.mode(), &ConvertMode::Create);
+          assert_eq!(value.srm_file(), &key.into());
           assert_eq!(
-            value.paths.cp[0],
-            Some("folder/D.mpk".try_into().expect("Path is good"))
+            value.save_file(ControllerPackKind::Player1.into()),
+            &Some("folder/D.mpk".try_into().expect("Path is good"))
           );
           assert_eq!(
-            value.paths.fla,
-            Some("D.fla".try_into().expect("File name is ok"))
+            value.save_file(SaveType::FlashRam),
+            &Some("D.fla".try_into().expect("File name is ok"))
           );
-          test_for_none(
-            &value.paths,
-            SaveFlag::ALL & !SaveFlag::CP1 & !SaveFlag::FLA,
-          );
+          check_empty_files(&value, SaveFlag::ALL & !SaveFlag::CP1 & !SaveFlag::FLA);
         }
         _ => assert!(false, "unreachable"),
       }
@@ -423,9 +422,9 @@ mod tests {
     let (name, value) = groups.0.first().unwrap();
 
     assert_eq!(name, "A");
-    assert_eq!(value.mode, ConvertMode::Split);
-    assert_eq!(value.file, "folder2/A".into());
-    assert!(value.paths.is_empty());
+    assert_eq!(value.mode(), &ConvertMode::Split);
+    assert_eq!(value.srm_file(), &"folder2/A".into());
+    check_empty_files(value, SaveFlag::ALL);
   }
 
   #[test]
@@ -439,21 +438,17 @@ mod tests {
     let (name, value) = groups.0.first().unwrap();
 
     assert_eq!(name, "Space");
-    assert_eq!(value.mode, ConvertMode::Create);
-    assert_eq!(value.file, "Space".into());
-    assert!(!value.paths.is_empty());
+    assert_eq!(value.mode(), &ConvertMode::Create);
+    assert_eq!(value.srm_file(), &"Space".into());
     assert_eq!(
-      value.paths.cp[0],
-      Some("Space.mpk".try_into().expect("File name is ok"))
+      value.save_file(ControllerPackKind::Player1.into()),
+      &Some("Space.mpk".try_into().expect("File name is ok"))
     );
     assert_eq!(
-      value.paths.sra,
-      Some("folder/extracted.sra".try_into().expect("File name is ok"))
+      value.save_file(SaveType::Sram),
+      &Some("folder/extracted.sra".try_into().expect("File name is ok"))
     );
-    test_for_none(
-      &value.paths,
-      SaveFlag::ALL & !SaveFlag::CP1 & !SaveFlag::SRA,
-    );
+    check_empty_files(&value, SaveFlag::ALL & !SaveFlag::CP1 & !SaveFlag::SRA);
   }
 
   #[test]
@@ -473,21 +468,17 @@ mod tests {
     let (name, value) = groups.0.first().unwrap();
 
     assert_eq!(name, "initial");
-    assert_eq!(value.mode, ConvertMode::Create);
-    assert_eq!(value.file, "actual".into());
-    assert!(!value.paths.is_empty());
+    assert_eq!(value.mode(), &ConvertMode::Create);
+    assert_eq!(value.srm_file(), &"actual".into());
     assert_eq!(
-      value.paths.sra,
-      Some("real.sra".try_into().expect("File name is ok"))
+      value.save_file(SaveType::Sram),
+      &Some("real.sra".try_into().expect("File name is ok"))
     );
     assert_eq!(
-      value.paths.cp[0],
-      Some("last.mpk".try_into().expect("File name is ok"))
+      value.save_file(ControllerPackKind::Player1.into()),
+      &Some("last.mpk".try_into().expect("File name is ok"))
     );
-    test_for_none(
-      &value.paths,
-      SaveFlag::ALL & !SaveFlag::CP1 & !SaveFlag::SRA,
-    );
+    check_empty_files(&value, SaveFlag::ALL & !SaveFlag::CP1 & !SaveFlag::SRA);
   }
 
   #[test]
@@ -501,14 +492,13 @@ mod tests {
     let (name, value) = groups.0.first().unwrap();
 
     assert_eq!(name, "Space");
-    assert_eq!(value.mode, ConvertMode::Split);
-    assert_eq!(value.file, "Space".into());
-    assert!(!value.paths.is_empty());
+    assert_eq!(value.mode(), &ConvertMode::Split);
+    assert_eq!(value.srm_file(), &"Space".into());
     assert_eq!(
-      value.paths.sra,
-      Some("folder/extracted.sra".try_into().expect("File name is ok"))
+      value.save_file(SaveType::Sram),
+      &Some("folder/extracted.sra".try_into().expect("File name is ok"))
     );
-    test_for_none(&value.paths, SaveFlag::ALL & !SaveFlag::SRA);
+    check_empty_files(&value, SaveFlag::ALL & !SaveFlag::SRA);
   }
 
   #[test]
@@ -529,21 +519,17 @@ mod tests {
     let (name, value) = groups.0.first().unwrap();
 
     assert_eq!(name, "this_not_it");
-    assert_eq!(value.mode, ConvertMode::Split);
-    assert_eq!(value.file, "actual".into());
-    assert!(!value.paths.is_empty());
+    assert_eq!(value.mode(), &ConvertMode::Split);
+    assert_eq!(value.srm_file(), &"actual".into());
     assert_eq!(
-      value.paths.sra,
-      Some("real.sra".try_into().expect("File name is ok"))
+      value.save_file(SaveType::Sram),
+      &Some("real.sra".try_into().expect("File name is ok"))
     );
     assert_eq!(
-      value.paths.cp[0],
-      Some("last.mpk".try_into().expect("File name is ok"))
+      value.save_file(ControllerPackKind::Player1.into()),
+      &Some("last.mpk".try_into().expect("File name is ok"))
     );
-    test_for_none(
-      &value.paths,
-      SaveFlag::ALL & !SaveFlag::CP1 & !SaveFlag::SRA,
-    );
+    check_empty_files(&value, SaveFlag::ALL & !SaveFlag::CP1 & !SaveFlag::SRA);
   }
 
   #[test]
