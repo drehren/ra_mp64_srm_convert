@@ -60,7 +60,7 @@ impl<'g> InvalidGroup<'g> {
 }
 
 /// Validates the groups, giving any group (by name) that has an invalid path
-pub fn validate_groups<'g>(groups: &'g GroupedSaves) -> Vec<InvalidGroup<'g>> {
+pub fn validate_groups(groups: &GroupedSaves) -> Vec<InvalidGroup<'_>> {
   let mut invalid_groups = Vec::new();
   for (key, value) in groups {
     if let Some(problem) = value.validate() {
@@ -152,7 +152,7 @@ pub fn group_saves(files: Vec<PathBuf>, opts: Grouping) -> GroupedSaves {
 
   // collect files from arguments
   for path in files.into_iter() {
-    let mut _pad = debug!("File {}:", path.display());
+    debug!("File {}:", path.display());
     if path.is_dir() {
       warn!("Path {} is a directory", path.display());
       continue;

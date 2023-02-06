@@ -11,14 +11,14 @@ pub(crate) struct RetroArchSrm {
 }
 
 impl AsRef<[u8]> for RetroArchSrm {
-  fn as_ref<'a>(&'a self) -> &'a [u8] {
+  fn as_ref(&self) -> &[u8] {
     const _: () = assert!(std::mem::align_of::<RetroArchSrm>() == 1);
     let ptr = self as *const _ as *const _;
     unsafe { std::slice::from_raw_parts(ptr, std::mem::size_of::<RetroArchSrm>()) }
   }
 }
 impl AsMut<[u8]> for RetroArchSrm {
-  fn as_mut<'a>(&'a mut self) -> &'a mut [u8] {
+  fn as_mut(&mut self) -> &mut [u8] {
     const _: () = assert!(std::mem::align_of::<RetroArchSrm>() == 1);
     let ptr = self as *mut _ as *mut _;
     unsafe { std::slice::from_raw_parts_mut(ptr, std::mem::size_of::<RetroArchSrm>()) }

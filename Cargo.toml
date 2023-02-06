@@ -1,6 +1,7 @@
 [package]
 name = "ra_mp64_srm_convert"
 description = "A simple application to convert to and from Retroarch Mupen64 save file."
+exclude = [".github./*", "tests/*"]
 version = "0.12.0"
 authors = ["Daniel Rehren <daniel.rehren.a@gmail.com>"]
 edition = "2021"

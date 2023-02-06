@@ -3,14 +3,14 @@ use std::io::{Read, Write};
 
 use crate::retroarch_srm::RetroArchSrm;
 use crate::SrmFile;
-use crate::{word_byte_swap, convert_params::SrmPaths, BaseArgs, OutputDir, PathError, Result};
+use crate::{convert_params::SrmPaths, word_byte_swap, BaseArgs, OutputDir, PathError, Result};
 
 macro_rules! read_battery {
   ($path_opt:expr, $battery:expr) => {{
     $path_opt.map_or(Ok(()), |path| {
       File::open(&path)
         .and_then(|mut f| f.read_exact($battery.as_mut()))
-        .or_else(|e| Err(PathError(path.into(), e)))
+        .map_err(|e| PathError(path.into(), e))
     })
   }};
 }
@@ -22,7 +22,7 @@ pub(crate) fn create_srm(output_path: SrmFile, args: &BaseArgs, input: SrmPaths)
   if output_path.is_file() {
     File::open(&output_path)
       .and_then(|mut f| f.read_exact(srm.as_mut().as_mut()))
-      .or_else(|e| Err(PathError(output_path.clone().into(), e)))?;
+      .map_err(|e| PathError(output_path.clone().into(), e))?;
   }
 
   if let Some(path) = input.eep {
@@ -46,7 +46,7 @@ pub(crate) fn create_srm(output_path: SrmFile, args: &BaseArgs, input: SrmPaths)
           }
           Ok(())
         })
-        .or_else(|e| Err(PathError(cp_path.into(), e)))?;
+        .map_err(|e| PathError(cp_path.into(), e))?;
     }
   } else {
     for (i, cp_path) in input.cp.into_iter().enumerate() {
@@ -55,12 +55,12 @@ pub(crate) fn create_srm(output_path: SrmFile, args: &BaseArgs, input: SrmPaths)
   }
 
   let out_dir = OutputDir::new(&args.output_dir, &output_path);
-  let out_path = out_dir.base_with_extension("srm").to_path_buf();
+  let out_path = out_dir.base_with_extension("srm");
   File::options()
     .create(args.overwrite)
     .create_new(!args.overwrite)
     .write(true)
     .open(&out_path)
     .and_then(|mut f| f.write_all(srm.as_ref().as_ref()))
-    .or_else(|e| Err(PathError(out_path, e)))
+    .map_err(|e| PathError(out_path, e))
 }

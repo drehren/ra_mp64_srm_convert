@@ -1,5 +1,6 @@
-/target
+**/target
 .vs/
 .vscode/
-/tests/*data/*
-/tests/out/*
+
+# ignore ramp64 cargo.lock
+ramp64-srm-convert-lib/Cargo.lock

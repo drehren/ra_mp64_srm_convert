@@ -50,7 +50,7 @@ impl ControllerPack {
 }
 
 impl AsRef<[u8]> for ControllerPack {
-  fn as_ref<'a>(&'a self) -> &'a [u8] {
+  fn as_ref(&self) -> &[u8] {
     const _: () = assert!(std::mem::align_of::<ControllerPack>() == 1);
     let ptr = self as *const _ as *const _;
     unsafe { slice::from_raw_parts(ptr, 0x8000) }
@@ -113,7 +113,7 @@ impl IdBlock {
     // check against the checksum
     let sum1 = self.calculate_checksum1();
     let sum2 = self.calculate_checksum2();
-    return sum1 == self.checksum1 && sum2 == self.checksum2;
+    sum1 == self.checksum1 && sum2 == self.checksum2
   }
 
   fn calculate_checksum1(&self) -> [u8; 2] {

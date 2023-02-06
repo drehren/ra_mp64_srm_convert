@@ -77,7 +77,7 @@ fn main() -> ExitCode {
   // if there is an output directory, check and create if missing
   if let Some(out_dir) = args.base.output_dir.as_ref() {
     if !out_dir.is_dir() && !out_dir.exists() {
-      match fs::create_dir_all(&out_dir) {
+      match fs::create_dir_all(out_dir) {
         Ok(()) => debug!("Created output directory at: {}", out_dir.display()),
         Err(err) => {
           error!("Could not create output directory: {err}");

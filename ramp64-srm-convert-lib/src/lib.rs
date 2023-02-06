@@ -26,7 +26,7 @@ pub use grouping::{group_saves, validate_groups, GroupedSaves, Grouping, Invalid
 
 fn word_byte_swap(buf: &mut [u8]) {
   for i in (0..buf.len()).step_by(4) {
-    buf.swap(i + 0, i + 3);
+    buf.swap(i, i + 3);
     buf.swap(i + 1, i + 2);
   }
 }
@@ -79,7 +79,7 @@ impl<'out, 'base> OutputDir<'out, 'base> {
     if input.is_absolute() {
       return input.into();
     }
-    let file_name = input.file_name().unwrap_or(&ffi::OsStr::new(""));
+    let file_name = input.file_name().unwrap_or(ffi::OsStr::new(""));
     match self.out_dir {
       Some(path) => path.as_path(),
       None => self.base.parent().unwrap(),
@@ -203,7 +203,7 @@ impl SrmFile {
 
   fn from_file_len<P: AsRef<Path>>(path: P) -> result::Result<Self, SrmFileInferError> {
     fs::File::open(path.as_ref())
-      .or_else(|e| Err(SrmFileInferError::Other(e)))
+      .map_err(SrmFileInferError::Other)
       .and_then(|file| {
         if file.metadata().unwrap().len() == 0x48800 {
           Ok(Self(path.as_ref().to_path_buf()))
@@ -299,15 +299,12 @@ impl SaveFile {
   }
 
   pub(crate) fn is_controller_pack(&self) -> bool {
-    match self.save_type {
-      SaveType::ControllerPack(_) => true,
-      _ => false,
-    }
+    matches!(self.save_type, SaveType::ControllerPack(_))
   }
 
   pub(crate) fn from_file_len<P: AsRef<Path>>(path: P) -> result::Result<Self, SaveFileInferError> {
     fs::File::open(&path)
-      .or_else(|e| Err(e.into()))
+      .map_err(|e| e.into())
       .and_then(|mut file| {
         match file.metadata().unwrap().len() {
           // 4Kbit or 16Kbit eeprom
@@ -321,7 +318,7 @@ impl SaveFile {
                 SaveType::Sram
               }
             })
-            .or_else(|e| Err(e.into())),
+            .map_err(|e| e.into()),
           // 1Mbit flash ram or 4 merged controller packs
           0x20000 => ControllerPack::infer_from(&mut file)
             .map(|cp| {
@@ -331,7 +328,7 @@ impl SaveFile {
                 SaveType::FlashRam
               }
             })
-            .or_else(|e| Err(e.into())),
+            .map_err(|e| e.into()),
           // uncompressed retroarch srm save size
           0x48800 => Err(SaveFileInferError::IsAnSrmFile),
           // unknown

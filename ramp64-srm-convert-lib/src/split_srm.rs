@@ -14,7 +14,7 @@ macro_rules! open_write_battery {
     $opts
       .open(&path)
       .and_then(|mut f| f.write_all($battery.as_ref()))
-      .or_else(|e| Err(PathError(path, e)))
+      .map_err(|e| PathError(path, e))
   }};
 }
 
@@ -22,7 +22,7 @@ pub(crate) fn split_srm(input_path: SrmFile, args: &BaseArgs, output: SrmPaths) 
   let mut srm = Box::<RetroArchSrm>::default();
   File::open(&input_path)
     .and_then(|mut f| f.read_exact(srm.as_mut().as_mut()))
-    .or_else(|e| Err(PathError(input_path.clone().into(), e)))?;
+    .map_err(|e| PathError(input_path.clone().into(), e))?;
 
   if args.change_endianness {
     word_byte_swap(srm.sram.as_mut());
@@ -68,7 +68,7 @@ pub(crate) fn split_srm(input_path: SrmFile, args: &BaseArgs, output: SrmPaths) 
           }
           Ok(())
         })
-        .or_else(|e| Err(PathError(path, e)))?;
+        .map_err(|e| PathError(path, e))?;
     }
   } else {
     for (i, path) in output.cp.into_iter().enumerate() {

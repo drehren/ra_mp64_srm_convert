@@ -335,14 +335,13 @@ impl fmt::Display for SrmPaths {
       for i in 1..=4 {
         display_some_path!(counter, f, format!("Controller Pack {i}"), &self.cp[i - 1]);
       }
-    } else {
-      if let Some(path) = &self.cp[0] {
+    } else if let Some(path) = &self.cp[0] {
         if counter > 0 {
           f.write_str(" and ")?;
         }
         f.write_fmt(format_args!("Controller Pack ({})", path.display()))?;
       }
-    }
+
     Ok(())
   }
 }
