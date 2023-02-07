@@ -1,4 +1,4 @@
-use crate::convert_params::SrmPaths;
+use crate::convert_params::{Problem, SrmPaths};
 use crate::{
   ControllerPackKind, ConvertMode, ConvertParams, SaveFile, SaveFileInferError, SrmFile,
 };
@@ -6,20 +6,9 @@ use crate::{
 use std::collections::HashMap;
 use std::ffi;
 use std::ops::{Deref, DerefMut};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use log::{debug, info, warn};
-
-/// The validation problem a group had
-#[derive(Debug, PartialEq, Eq)]
-pub enum Problem<'g> {
-  /// Missing input save files
-  NoInput,
-  /// Files do not exist
-  FileDoesNotExist(Vec<&'g Path>),
-  /// Path is not a file
-  NotAFile,
-}
 
 /// Represents an invalid group entry
 #[derive(Debug)]

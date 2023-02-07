@@ -3,8 +3,8 @@ use std::{fmt, path::Path};
 use log::info;
 
 use crate::{
-  create_srm::create_srm, split_srm::split_srm, BaseArgs, ControllerPackKind, Problem, SaveFile,
-  SaveType, SrmFile,
+  create_srm::create_srm, split_srm::split_srm, BaseArgs, ControllerPackKind, SaveFile, SaveType,
+  SrmFile,
 };
 
 macro_rules! display_some_path {
@@ -19,8 +19,46 @@ macro_rules! display_some_path {
   };
 }
 
-/// Converts to/from SRM files based on the parameters
-/// 
+/// Does the srm file conversion, depending on the given [params](ConvertParams) and [args](BaseArgs).
+///
+/// This function will also use the [info!] macro to provide information regarding the conversion
+/// that will be done.
+///
+/// # Examples
+/// ```
+/// use ramp64_srm_convert_lib::*;
+/// # use assert_fs::{TempDir, prelude::*};
+/// # use std::io::Write;
+///
+/// # let tmp_dir = TempDir::new()?;
+/// // Create the default args
+/// let args = BaseArgs::default();
+///
+/// // Setup the file name
+/// let file: SrmFile = "file.srm".into();
+/// # let file: SrmFile = tmp_dir.child("file.srm").to_path_buf().try_into()?;
+/// // Check that the file does not exist
+/// assert!(!file.exists());
+///
+/// // Create the convert parameters
+/// let mut create_params = ConvertParams::new(ConvertMode::Create, file.clone());
+///
+/// // Setup an input file
+/// let eep: SaveFile = "file.eep".try_into()?;
+/// // ...
+/// # let eep: SaveFile = tmp_dir.child("file.eep").to_path_buf().try_into()?;
+/// # std::fs::File::create(&eep).and_then(|mut f| f.write_all(b"101").and_then(|_| f.set_len(512)))?;
+/// assert!(eep.exists());
+///
+/// create_params.set_or_replace_file(eep);
+///
+/// // Apply the conversion
+/// convert(create_params, &args)?;
+///
+/// // Now check the file exists
+/// assert!(file.exists());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub fn convert(params: ConvertParams, args: &BaseArgs) -> crate::Result {
   let mode_str = format!("{params}");
   let ConvertParams { mode, file, paths } = params;
@@ -55,21 +93,20 @@ pub struct ConvertParams {
 }
 
 impl ConvertParams {
-  /// Returns a conversion parameters with the specified convert mode and srm file
-  ///
-  /// # Arguments
-  ///
-  /// * `mode` - The [ConvertMode] which will determine the [SrmFile] conversion
-  /// * `file` - The [SrmFile] to which apply the specified conversion
+  /// Creates conversion parameters with the specified convert [`mode`]
+  /// and srm [file](`SrmFile`).
   ///
   /// # Examples
-  ///
   /// ```
   /// use ramp64_srm_convert_lib::{ConvertParams, ConvertMode};
   ///
-  /// let split_file = ConvertParams::new(ConvertMode::Split, "File.srm".into());  // Will split File.srm if it exists
-  /// let create_file = ConvertParams::new(ConvertMode::Create, "New.srm".into()); // Will create New.srm, if inputs are given
+  /// // Will split File.srm if it exists
+  /// let split_params = ConvertParams::new(ConvertMode::Split, "File.srm".into());
+  ///
+  /// // Will create New.srm, if inputs are given
+  /// let create_params = ConvertParams::new(ConvertMode::Create, "New.srm".into());
   /// ```
+  /// [`mode`]: enum.ConvertMode.html
   pub fn new(mode: ConvertMode, file: SrmFile) -> Self {
     Self {
       mode,
@@ -78,18 +115,36 @@ impl ConvertParams {
     }
   }
 
+  /// Returns a parameters that will split te given [`SrmFile`].
+  pub fn split(file: SrmFile) -> Self {
+    Self {
+      mode: ConvertMode::Split,
+      file,
+      paths: SrmPaths::default(),
+    }
+  }
+
+  /// Returns the parameters that will create/update the given [`SrmFile`].
+  pub fn create(file: SrmFile) -> Self {
+    Self {
+      mode: ConvertMode::Create,
+      file,
+      paths: SrmPaths::default(),
+    }
+  }
+
   pub(crate) fn set_paths(self, paths: SrmPaths) -> Self {
     Self { paths, ..self }
   }
 
-  /// Gets the [mode](ConvertMode) of this conversion parameters
+  /// Gets the conversion [mode](ConvertMode) these parameters would apply.
   ///
   /// # Examples
   ///
   /// ```
   /// use ramp64_srm_convert_lib::{ConvertParams, ConvertMode};
   ///
-  /// let split_file = ConvertParams::new(ConvertMode::Split, "File.srm".into());
+  /// let split_params = ConvertParams::new(ConvertMode::Split, "File.srm".into());
   ///
   /// assert_eq!(split_file.mode(), &ConvertMode::Split);
   /// ```
@@ -97,16 +152,22 @@ impl ConvertParams {
     &self.mode
   }
 
+  /// Returns the [srm file](SrmFile) to which the conversion would apply to.
   ///
+  /// # Examples
+  ///
+  /// ```
+  /// use ramp64_srm_convert_lib::*;
+  ///
+  /// let params = ConvertParams::new(ConvertMode::Create, "SrmFile".into());
+  ///
+  /// assert_eq!(params.srm_file(), &"SrmFile.srm".into());
+  /// ```
   pub fn srm_file(&self) -> &SrmFile {
     &self.file
   }
 
-  /// Gets the [SaveFile] of the given [SaveType]
-  ///
-  /// # Arguments
-  ///
-  /// * `save_type` - The [SaveType] of the [SaveFile]
+  /// Gets the [file path](SaveFile) for the given [SaveType]
   ///
   /// # Examples
   ///
@@ -136,15 +197,7 @@ impl ConvertParams {
     }
   }
 
-  /// Replaces the current [`ConvertMode`] with the given one
-  ///
-  /// # Arguments
-  ///
-  /// `mode` - A [ConvertMode] that replaces the current
-  ///
-  /// # Returns
-  ///
-  /// The old [ConvertMode]
+  /// Replaces the current [`ConvertMode`] with the given one, returning the old one.
   ///
   /// # Examples
   ///
@@ -154,7 +207,9 @@ impl ConvertParams {
   /// let mut params = ConvertParams::new(ConvertMode::Split, "File.srm".into());
   /// assert_eq!(params.mode(), &ConvertMode::Split);
   ///
-  /// assert_eq!(params.replace_mode(ConvertMode::Create), ConvertMode::Split); // Replaces returns the "old" mode
+  /// // Replace returns the old mode
+  /// assert_eq!(params.replace_mode(ConvertMode::Create), ConvertMode::Split);
+  ///
   /// // Check that the replace was effective
   /// assert_eq!(params.mode(), &ConvertMode::Create);
   /// ```
@@ -162,15 +217,7 @@ impl ConvertParams {
     std::mem::replace(&mut self.mode, mode)
   }
 
-  /// Replaces the current [`SrmFile`] with the given one, returning the old one
-  ///
-  /// # Arguments
-  ///
-  /// `srm_file` - The new [SrmFile] to perform the conversion
-  ///
-  /// # Returns
-  ///
-  /// The old [SrmFile]
+  /// Replaces the current [`SrmFile`] with the given one, returning the old one.
   ///
   /// # Examples
   /// ```
@@ -184,12 +231,12 @@ impl ConvertParams {
     std::mem::replace(&mut self.file, srm_file)
   }
 
-  /// Sets or replaces an existing [`SaveFile`]
+  /// Sets or replaces an existing [`SaveFile`] returning the old one, if any.
   pub fn set_or_replace_file(&mut self, save_file: SaveFile) -> Option<SaveFile> {
     self.paths.set(save_file)
   }
 
-  /// Unset the path for the specified save type
+  /// Takes the [`SaveFile`] of the specified [`SaveType`] returning the old one, if any.
   pub fn unset_file(&mut self, save_type: SaveType) -> Option<SaveFile> {
     self.paths.unset(save_type)
   }
@@ -239,33 +286,22 @@ impl fmt::Display for ConvertParams {
   }
 }
 
-/// The mode to use to convert the SRM file
-#[derive(Default, Debug, PartialEq)]
+/// Specifies the way to convert an SRM file
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
 pub enum ConvertMode {
-  /// Specify this variant to create an SRM file
+  /// Specify this variant to create/overwrite an SRM file
   #[default]
   Create,
-  /// Specify this variant to split an SRM file
+  /// Specify this variant to split an existing SRM file
   Split,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Default)]
 pub(crate) struct SrmPaths {
   pub(crate) eep: Option<SaveFile>,
   pub(crate) sra: Option<SaveFile>,
   pub(crate) fla: Option<SaveFile>,
   pub(crate) cp: [Option<SaveFile>; 4],
-}
-
-impl Default for SrmPaths {
-  fn default() -> Self {
-    Self {
-      eep: Default::default(),
-      sra: Default::default(),
-      fla: Default::default(),
-      cp: Default::default(),
-    }
-  }
 }
 
 impl SrmPaths {
@@ -336,14 +372,25 @@ impl fmt::Display for SrmPaths {
         display_some_path!(counter, f, format!("Controller Pack {i}"), &self.cp[i - 1]);
       }
     } else if let Some(path) = &self.cp[0] {
-        if counter > 0 {
-          f.write_str(" and ")?;
-        }
-        f.write_fmt(format_args!("Controller Pack ({})", path.display()))?;
+      if counter > 0 {
+        f.write_str(" and ")?;
       }
+      f.write_fmt(format_args!("Controller Pack ({})", path.display()))?;
+    }
 
     Ok(())
   }
+}
+
+/// The validation problem a group had
+#[derive(Debug, PartialEq, Eq)]
+pub enum Problem<'g> {
+  /// Missing input save files
+  NoInput,
+  /// Files do not exist
+  FileDoesNotExist(Vec<&'g Path>),
+  /// Path is not a file
+  NotAFile,
 }
 
 #[cfg(test)]

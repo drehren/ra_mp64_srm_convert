@@ -21,8 +21,8 @@ use std::{
 };
 
 use controller_pack::ControllerPack;
-pub use convert_params::{convert, ConvertMode, ConvertParams};
-pub use grouping::{group_saves, validate_groups, GroupedSaves, Grouping, InvalidGroup, Problem};
+pub use convert_params::{convert, ConvertMode, ConvertParams, Problem};
+pub use grouping::{group_saves, validate_groups, GroupedSaves, Grouping, InvalidGroup};
 
 fn word_byte_swap(buf: &mut [u8]) {
   for i in (0..buf.len()).step_by(4) {
@@ -618,15 +618,13 @@ mod tests {
     );
   }
 
-  const DATA_BUF: &[u8] = &[5u8; 512];
-
   #[test]
   fn verify_eep_file_try_from() {
     let tmp_dir = assert_fs::TempDir::new().expect("tmp dir should be created");
 
     let file_4k = tmp_dir.child("save_4k_eep_no_ext");
     std::fs::File::create(&file_4k)
-      .and_then(|mut f| f.write_all(&DATA_BUF))
+      .and_then(|mut f| f.write_all(b"10101").and_then(|_| f.set_len(512)))
       .expect("4k file should have been written");
 
     file_4k.assert(predicates::path::is_file());
@@ -642,11 +640,7 @@ mod tests {
 
     let file_16k = tmp_dir.child("save_16k_eep_no_ext");
     std::fs::File::create(&file_16k)
-      .map(|mut f| {
-        for _ in (0..0x800).step_by(512) {
-          f.write_all(&DATA_BUF).unwrap();
-        }
-      })
+      .and_then(|mut f| f.write_all(b"010101").and_then(|_| f.set_len(2048)))
       .expect("16k file should have been written");
 
     let eep: SaveFile = file_16k.to_path_buf().try_into().unwrap();
@@ -665,11 +659,7 @@ mod tests {
 
     let file_path = tmp_dir.child("srm_file_no_ext");
     fs::File::create(&file_path)
-      .map(|mut f| {
-        for _ in (0..0x8000).step_by(512) {
-          f.write_all(&DATA_BUF).unwrap();
-        }
-      })
+      .and_then(|mut f| f.write_all(b"1x4as").and_then(|_| f.set_len(0x8000)))
       .expect("could not create/write file");
 
     let sra: SaveFile = file_path.to_path_buf().try_into().unwrap();
@@ -688,11 +678,7 @@ mod tests {
 
     let file_path = tmp_dir.child("fla_file_no_ext");
     fs::File::create(&file_path)
-      .map(|mut f| {
-        for _ in (0..0x20000).step_by(512) {
-          f.write_all(&DATA_BUF).unwrap();
-        }
-      })
+      .and_then(|mut f| f.write_all(b"hello word").and_then(|_| f.set_len(0x20000)))
       .expect("could not create/write file");
 
     let fla: SaveFile = file_path.to_path_buf().try_into().unwrap();
