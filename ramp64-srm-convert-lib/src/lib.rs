@@ -159,17 +159,17 @@ pub enum SaveType {
 }
 
 impl SaveType {
-  /// Gets the extension of the specified [SaveType]
-  pub fn extension(&self) -> &str {
+  /// Gets the extensions of the specified [SaveType]
+  pub fn extensions(&self) -> &'static [&'static str] {
     match self {
-      Self::Eeprom => "eep",
-      Self::Sram => "sra",
-      Self::FlashRam => "fla",
-      Self::ControllerPack(ControllerPackKind::Mupen) => "mpk",
-      Self::ControllerPack(ControllerPackKind::Player1) => "mpk1",
-      Self::ControllerPack(ControllerPackKind::Player2) => "mpk2",
-      Self::ControllerPack(ControllerPackKind::Player3) => "mpk3",
-      Self::ControllerPack(ControllerPackKind::Player4) => "mpk4",
+      Self::Eeprom => &["eep"],
+      Self::Sram => &["sra"],
+      Self::FlashRam => &["fla"],
+      Self::ControllerPack(ControllerPackKind::Mupen) => &["mpk", "mpk1", "mpk2", "mpk3", "mpk4"],
+      Self::ControllerPack(ControllerPackKind::Player1) => &["mpk1"],
+      Self::ControllerPack(ControllerPackKind::Player2) => &["mpk2"],
+      Self::ControllerPack(ControllerPackKind::Player3) => &["mpk3"],
+      Self::ControllerPack(ControllerPackKind::Player4) => &["mpk4"],
     }
   }
 }
@@ -182,7 +182,7 @@ impl fmt::Display for SaveType {
       SaveType::FlashRam => f.write_str("FlashRAM"),
       SaveType::ControllerPack(ControllerPackKind::Mupen) => f.write_str("Mupen Controller Pack"),
       SaveType::ControllerPack(player) => {
-        f.write_fmt(format_args!("Controller Pack {}", { *player as i32 + 1 }))
+        f.write_fmt(format_args!("Controller Pack {}", { *player as i32 }))
       }
     }
   }
