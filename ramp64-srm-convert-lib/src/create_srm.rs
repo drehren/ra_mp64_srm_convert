@@ -2,15 +2,15 @@ use std::fs::File;
 use std::io::{Read, Write};
 
 use crate::retroarch_srm::RetroArchSrm;
-use crate::SrmFile;
 use crate::{convert_params::SrmPaths, word_byte_swap, BaseArgs, OutputDir, PathError, Result};
+use crate::{ControllerPackKind, SaveType, SrmFile};
 
 macro_rules! read_battery {
   ($path_opt:expr, $battery:expr) => {{
-    $path_opt.map_or(Ok(()), |path| {
+    $path_opt.as_ref().map_or(Ok(()), |path| {
       File::open(&path)
         .and_then(|mut f| f.read_exact($battery.as_mut()))
-        .map_err(|e| PathError(path.into(), e))
+        .map_err(|e| PathError(path.as_ref().into(), e))
     })
   }};
 }
@@ -25,12 +25,12 @@ pub(crate) fn create_srm(output_path: SrmFile, args: &BaseArgs, input: SrmPaths)
       .map_err(|e| PathError(output_path.clone().into(), e))?;
   }
 
-  if let Some(path) = input.eep {
+  if let Some(path) = input.get(SaveType::Eeprom) {
     let len = path.metadata().unwrap().len() as usize;
     read_battery!(Some(path), srm.eeprom.as_mut()[..len])?;
   }
-  read_battery!(input.sra, srm.sram)?;
-  read_battery!(input.fla, srm.flashram)?;
+  read_battery!(input.get(SaveType::Sram), srm.sram)?;
+  read_battery!(input.get(SaveType::FlashRam), srm.flashram)?;
 
   if args.change_endianness {
     word_byte_swap(srm.sram.as_mut());
@@ -38,7 +38,7 @@ pub(crate) fn create_srm(output_path: SrmFile, args: &BaseArgs, input: SrmPaths)
   }
 
   if args.merge_mempacks {
-    if let [Some(cp_path), ..] = input.cp {
+    if let Some(cp_path) = input.get(ControllerPackKind::Mupen) {
       File::open(&cp_path)
         .and_then(|mut f| {
           for i in 0..4 {
@@ -46,11 +46,12 @@ pub(crate) fn create_srm(output_path: SrmFile, args: &BaseArgs, input: SrmPaths)
           }
           Ok(())
         })
-        .map_err(|e| PathError(cp_path.into(), e))?;
+        .map_err(|e| PathError(cp_path.clone().into(), e))?;
     }
   } else {
-    for (i, cp_path) in input.cp.into_iter().enumerate() {
-      read_battery!(cp_path, srm.controller_pack[i])?;
+    use ControllerPackKind::*;
+    for (i, cp) in [Player1, Player2, Player3, Player4].into_iter().enumerate() {
+      read_battery!(input.get(cp), srm.controller_pack[i])?;
     }
   }
 

@@ -1,18 +1,17 @@
-use crate::convert_params::{Problem, SrmPaths};
-use crate::{
-  ControllerPackKind, ConvertMode, ConvertParams, SaveFile, SaveFileInferError, SrmFile,
-};
-
 use std::collections::HashMap;
 use std::ffi;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 
-/// Represents an invalid group entry
+use ramp64_srm_convert_lib::{
+  ControllerPackKind, ConvertMode, ConvertParams, OutputDir, Problem, SaveFile, SaveFileInferError,
+  SaveType, SrmFile,
+};
+
 #[derive(Debug)]
-pub struct InvalidGroup<'g> {
+pub(crate) struct InvalidGroup<'g> {
   key: &'g str,
   mode: &'g ConvertMode,
   file: &'g SrmFile,
@@ -48,8 +47,7 @@ impl<'g> InvalidGroup<'g> {
   }
 }
 
-/// Validates the groups, giving any group (by name) that has an invalid path
-pub fn validate_groups(groups: &GroupedSaves) -> Vec<InvalidGroup<'_>> {
+pub(crate) fn validate_groups(groups: &GroupedSaves) -> Vec<InvalidGroup<'_>> {
   let mut invalid_groups = Vec::new();
   for (key, value) in groups {
     if let Some(problem) = value.validate() {
@@ -114,14 +112,14 @@ impl<'a> IntoIterator for &'a mut GroupedSaves {
 
 enum ValidFile {
   Srm(SrmFile),
-  Other(SaveFile),
+  Save(SaveFile),
 }
 
 impl ValidFile {
-  fn save_type_display(&self) -> String {
+  fn display(&self) -> std::path::Display<'_> {
     match self {
-      Self::Srm(_) => "SRM".into(),
-      Self::Other(file) => format!("{}", file.save_type),
+      ValidFile::Srm(f) => f.as_ref().display(),
+      ValidFile::Save(f) => f.as_ref().display(),
     }
   }
 }
@@ -134,7 +132,8 @@ pub fn group_saves(files: Vec<PathBuf>, opts: Grouping) -> GroupedSaves {
     key: String,
     mode: Option<ConvertMode>,
     file: Option<SrmFile>,
-    paths: SrmPaths,
+    //paths: SrmPaths,
+    paths: Vec<SaveFile>,
   }
 
   let mut values: Vec<GroupData> = Vec::new();
@@ -152,14 +151,19 @@ pub fn group_saves(files: Vec<PathBuf>, opts: Grouping) -> GroupedSaves {
       continue;
     };
 
+    let key = if opts.mode == GroupMode::Automatic {
+      debug!("Group name is: \"{name}\"");
+      name
+    } else {
+      values
+        .first()
+        .map(|GroupData { key, .. }| key.clone())
+        .unwrap_or(name)
+    };
+
     // determine if this is an SrmFile or an SaveFile
     let valid_file = match SaveFile::try_from(path.clone()) {
-      Ok(mut save_file) => {
-        if opts.merge_cp && save_file.is_controller_pack() {
-          save_file.save_type = ControllerPackKind::Mupen.into()
-        }
-        ValidFile::Other(save_file)
-      }
+      Ok(save_file) => ValidFile::Save(save_file),
       Err(SaveFileInferError::IsAnSrmFile) => match SrmFile::try_from(path) {
         Ok(srm_file) => ValidFile::Srm(srm_file),
         Err(err) => {
@@ -173,48 +177,59 @@ pub fn group_saves(files: Vec<PathBuf>, opts: Grouping) -> GroupedSaves {
       }
     };
 
-    let key = if opts.mode == GroupMode::Automatic {
-      debug!("Group name is: \"{name}\"");
-      name
-    } else {
-      values
-        .first()
-        .map(|GroupData { key, .. }| key.clone())
-        .unwrap_or(name)
-    };
-
     match order.get(&key) {
       Some(&index) => {
-        let data = &mut values[index];
-        let save_type = valid_file.save_type_display();
-        match match valid_file {
-          ValidFile::Srm(srm) => (data.file.replace(srm.clone()).map(ValidFile::Srm), srm.0),
-          ValidFile::Other(save) => (
-            data.paths.set(save.clone()).map(ValidFile::Other),
-            save.file,
-          ),
-        } {
-          (Some(ValidFile::Srm(SrmFile(old))), new)
-          | (Some(ValidFile::Other(SaveFile { file: old, .. })), new) => {
-            info!(
-              "{save_type}: replaced {} with {}",
-              old.display(),
-              new.display()
-            )
-          }
-          (None, _) => {
-            debug!("{save_type}: added")
-          }
+        // update existing group
+
+        // let data = &mut values[index];
+        // let save_type = valid_file.save_type_display();
+        // match match valid_file {
+        //   ValidFile::Srm(srm) => (
+        //     data.file.replace(srm.clone()).map(PathBuf::from),
+        //     PathBuf::from(srm),
+        //   ),
+        //   ValidFile::Other(save) => (
+        //     {
+        //       if opts.merge_cp && save_file.is_controller_pack() {
+        //         let Ok(save_file_change) = save_file.try_change_type(ControllerPackKind::Mupen) else {
+        //           warn!("Could not set controller pack as a Mupen file");
+        //           continue;
+        //         };
+        //         save_file = save_file_change;
+        //       }
+        //       data.paths.set(save.clone()).map(PathBuf::from)
+        //     },
+        //     PathBuf::from(save),
+        //   ),
+        // } {
+        //   (Some(old), new) => {
+        //     info!(
+        //       "{save_type}: replaced {} with {}",
+        //       old.display(),
+        //       new.display()
+        //     )
+        //   }
+        //   (None, _) => {
+        //     debug!("{save_type}: added")
+        //   }
+        // }
+        let file_str = format!("{}", valid_file.display());
+        match valid_file {
+          ValidFile::Srm(srm) => match values[index].file.replace(srm) {
+            Some(old) => warn!("{key} SRM: replaced {} with {file_str}", old.display()),
+            None => debug!("{key} SRM: set"),
+          },
+          ValidFile::Save(save) => values[index].paths.push(save),
         }
       }
       None => {
-        warn!("Created new group: \"{key}\"");
+        info!("Created new group: \"{key}\"");
         let mode = opts.mode.get_convert_mode(&valid_file);
-        let mut paths = SrmPaths::default();
+        let mut paths = Vec::with_capacity(5);
         let file = match valid_file {
           ValidFile::Srm(srm_file) => Some(srm_file),
-          ValidFile::Other(save_file) => {
-            paths.set(save_file);
+          ValidFile::Save(save_file) => {
+            paths.push(save_file);
             None
           }
         };
@@ -238,20 +253,58 @@ pub fn group_saves(files: Vec<PathBuf>, opts: Grouping) -> GroupedSaves {
         file,
         paths,
       } = data;
-      (
-        key.clone(),
-        ConvertParams::new(
-          mode.unwrap_or_else(|| {
-            debug!("> Group \"{key}\": Will Create SRM");
-            ConvertMode::Create
-          }),
-          file.unwrap_or_else(|| {
-            debug!("> Group \"{key}\": Default SRM");
-            SrmFile::from_name(key)
-          }),
-        )
-        .set_paths(paths),
-      )
+
+      let mut params = ConvertParams::new(
+        mode.unwrap_or_else(|| {
+          debug!("> Group \"{key}\": Will Create SRM");
+          ConvertMode::Create
+        }),
+        file.unwrap_or_else(|| {
+          debug!("> Group \"{key}\": Default SRM");
+          key.as_str().into()
+        }),
+      );
+
+      // get the mode so we know which files should change output
+      let mode = *params.mode();
+
+      for mut save_file in paths {
+        let save_type = save_file.save_type();
+        let save_file_str = format!("{}", save_file.display());
+
+        if mode == ConvertMode::Split {
+          use ControllerPackKind::*;
+          use SaveType::ControllerPack;
+
+          let out = OutputDir::new(opts.output_dir, params.srm_file().as_ref());
+          if opts.merge_cp
+            && matches!(
+              save_type,
+              ControllerPack(Player1 | Player2 | Player3 | Player4)
+            )
+          {
+            let real_path = SaveFile::try_from(out.to_out_dir(&save_file))
+              .expect("lib failing to support file dir change");
+            save_file = match real_path.try_change_type(Mupen) {
+              Ok(real_file) => real_file,
+              Err(err) => {
+                error!("Could not set controller pack as Mupen: {err}");
+                continue;
+              }
+            }
+          }
+        } else {
+        }
+        match params.set_or_replace_file(save_file) {
+          Some(old) => warn!(
+            "{key} {save_type}: replaced {} with {save_file_str}",
+            old.display()
+          ),
+          None => debug!("{key} {save_type}: set"),
+        }
+      }
+
+      (key.clone(), params)
     })
     .collect::<Vec<_>>();
 
@@ -272,7 +325,7 @@ impl GroupMode {
       GroupMode::Split => Some(ConvertMode::Split),
       GroupMode::Automatic => match valid_file {
         ValidFile::Srm(_) => Some(ConvertMode::Split),
-        ValidFile::Other(_) => None,
+        ValidFile::Save(_) => None,
       },
     }
   }
@@ -280,55 +333,69 @@ impl GroupMode {
 
 /// Provides the grouping options
 #[derive(Debug, Clone, Copy)]
-pub struct Grouping {
+pub struct Grouping<'out_dir> {
   mode: GroupMode,
   merge_cp: bool,
+  output_dir: &'out_dir Option<PathBuf>,
 }
-impl Grouping {
-  fn new(mode: GroupMode) -> Self {
+impl<'out_dir> Grouping<'out_dir> {
+  fn new(mode: GroupMode, output_dir: &'out_dir Option<PathBuf>) -> Self {
     Self {
       mode,
       merge_cp: false,
+      output_dir,
     }
   }
-  /// Creates an automatic grouping options
-  pub fn automatic() -> Self {
-    Self::new(GroupMode::Automatic)
+  pub(crate) fn automatic(output_dir: &'out_dir Option<PathBuf>) -> Self {
+    Self::new(GroupMode::Automatic, output_dir)
   }
-  /// Creates a forced creation grouping options
-  pub fn force_create() -> Self {
-    Self::new(GroupMode::Create)
+  pub(crate) fn force_create(output_dir: &'out_dir Option<PathBuf>) -> Self {
+    Self::new(GroupMode::Create, output_dir)
   }
-  /// Creates a forces split grouping options
-  pub fn force_split() -> Self {
-    Self::new(GroupMode::Split)
+  pub(crate) fn force_split(output_dir: &'out_dir Option<PathBuf>) -> Self {
+    Self::new(GroupMode::Split, output_dir)
   }
-  /// Set to true to treat any controller pack as Mupen64 mempack
-  pub fn set_merge_controller_pack(self, merge_cp: bool) -> Self {
+  pub(crate) fn set_merge_controller_pack(self, merge_cp: bool) -> Self {
     Self { merge_cp, ..self }
-  }
-}
-impl From<GroupMode> for Grouping {
-  fn from(mode: GroupMode) -> Self {
-    Self::new(mode)
   }
 }
 
 #[cfg(test)]
 mod tests {
-  use std::path::Path;
+  use std::{fs, path::Path};
 
-  use crate::{
-    convert_params::tests::{check_empty_files, SaveFlag, SaveFlagExt},
-    grouping::{group_saves, validate_groups, Problem},
-    ControllerPackKind, ConvertMode, ConvertParams, Grouping, SaveType,
+  use assert_fs::{prelude::PathChild, TempDir};
+
+  use super::{group_saves, validate_groups, Grouping, Problem};
+
+  use ramp64_srm_convert_lib::{
+    ControllerPackKind, ConvertMode, ConvertParams, SaveFile, SaveType, SrmFile,
   };
 
   use super::GroupedSaves;
 
+  use ControllerPackKind::*;
+  use SaveType::*;
+
   impl GroupedSaves {
     fn names(&self) -> Vec<&String> {
       self.0.iter().map(|(k, ..)| k).collect::<Vec<_>>()
+    }
+  }
+
+  const ALL_TYPES: &[SaveType; 7] = &[
+    Eeprom,
+    Sram,
+    FlashRam,
+    ControllerPack(ControllerPackKind::Player1),
+    ControllerPack(ControllerPackKind::Player2),
+    ControllerPack(ControllerPackKind::Player3),
+    ControllerPack(ControllerPackKind::Player4),
+  ];
+
+  fn check_all_empty_saves_but(params: &ConvertParams, skip: &[SaveType]) {
+    for save_type in ALL_TYPES.iter().filter(|t| !skip.contains(&t)) {
+      assert!(matches!(params.save_file(*save_type), None))
     }
   }
 
@@ -345,7 +412,7 @@ mod tests {
       "folder/D.mpk".into(),
     ];
 
-    let groups = group_saves(files, Grouping::automatic());
+    let groups = group_saves(files, Grouping::automatic(&None));
 
     assert_eq!(groups.names(), vec!["A", "B", "C", "B1", "D"]);
 
@@ -356,17 +423,17 @@ mod tests {
           // simple auto-name split
           assert_eq!(value.mode(), &ConvertMode::Split);
           assert_eq!(value.srm_file(), &key.into());
-          check_empty_files(&value, SaveFlag::ALL);
+          check_all_empty_saves_but(&value, &[]);
         }
         "B" => {
           // split to named mpk
           assert_eq!(value.mode(), &ConvertMode::Split);
           assert_eq!(value.srm_file(), &key.into());
           assert_eq!(
-            value.save_file(ControllerPackKind::Player1.into()),
+            value.save_file(ControllerPackKind::Player1),
             &Some("B.mpk1".try_into().expect("File name is ok"))
           );
-          check_empty_files(&value, SaveFlag::ALL & !SaveFlag::CP1);
+          check_all_empty_saves_but(&value, &[Player1.into()]);
         }
         "B1" => {
           // create from B1.eep, no srm given
@@ -376,21 +443,21 @@ mod tests {
             value.save_file(SaveType::Eeprom),
             &Some("B1.eep".try_into().expect("File name is ok"))
           );
-          check_empty_files(&value, SaveFlag::ALL & !SaveFlag::EEP);
+          check_all_empty_saves_but(&value, &[Eeprom]);
         }
         "D" => {
           // create from D.fla & folder/D.mpk, to D.srm
           assert_eq!(value.mode(), &ConvertMode::Create);
           assert_eq!(value.srm_file(), &key.into());
           assert_eq!(
-            value.save_file(ControllerPackKind::Player1.into()),
+            value.save_file(ControllerPackKind::Player1),
             &Some("folder/D.mpk".try_into().expect("Path is good"))
           );
           assert_eq!(
             value.save_file(SaveType::FlashRam),
             &Some("D.fla".try_into().expect("File name is ok"))
           );
-          check_empty_files(&value, SaveFlag::ALL & !SaveFlag::CP1 & !SaveFlag::FLA);
+          check_all_empty_saves_but(&value, &[FlashRam, Player1.into()]);
         }
         _ => assert!(false, "unreachable"),
       }
@@ -404,7 +471,7 @@ mod tests {
       "folder/A.srm".into(),
       "folder2/A.srm".into(),
     ];
-    let groups = group_saves(files, Grouping::automatic());
+    let groups = group_saves(files, Grouping::automatic(&None));
 
     assert_eq!(groups.0.len(), 1);
 
@@ -413,14 +480,14 @@ mod tests {
     assert_eq!(name, "A");
     assert_eq!(value.mode(), &ConvertMode::Split);
     assert_eq!(value.srm_file(), &"folder2/A".into());
-    check_empty_files(value, SaveFlag::ALL);
+    check_all_empty_saves_but(value, &[]);
   }
 
   #[test]
   fn verify_create_grouping() {
     let files = vec!["Space.mpk".into(), "folder/extracted.sra".into()];
 
-    let groups = group_saves(files, Grouping::force_create());
+    let groups = group_saves(files, Grouping::force_create(&None));
 
     assert_eq!(groups.0.len(), 1);
 
@@ -430,14 +497,14 @@ mod tests {
     assert_eq!(value.mode(), &ConvertMode::Create);
     assert_eq!(value.srm_file(), &"Space".into());
     assert_eq!(
-      value.save_file(ControllerPackKind::Player1.into()),
+      value.save_file(ControllerPackKind::Player1),
       &Some("Space.mpk".try_into().expect("File name is ok"))
     );
     assert_eq!(
       value.save_file(SaveType::Sram),
       &Some("folder/extracted.sra".try_into().expect("File name is ok"))
     );
-    check_empty_files(&value, SaveFlag::ALL & !SaveFlag::CP1 & !SaveFlag::SRA);
+    check_all_empty_saves_but(&value, &[Player1.into(), Sram]);
   }
 
   #[test]
@@ -450,7 +517,7 @@ mod tests {
       "actual.srm".into(),
     ];
 
-    let groups = group_saves(files, Grouping::force_create());
+    let groups = group_saves(files, Grouping::force_create(&None));
 
     assert_eq!(groups.0.len(), 1);
 
@@ -464,19 +531,19 @@ mod tests {
       &Some("real.sra".try_into().expect("File name is ok"))
     );
     assert_eq!(
-      value.save_file(ControllerPackKind::Player1.into()),
+      value.save_file(ControllerPackKind::Player1),
       &Some("last.mpk".try_into().expect("File name is ok"))
     );
-    check_empty_files(&value, SaveFlag::ALL & !SaveFlag::CP1 & !SaveFlag::SRA);
+    check_all_empty_saves_but(&value, &[Player1.into(), Sram]);
   }
 
   #[test]
   fn verify_split_grouping() {
     let files = vec!["Space.srm".into(), "folder/extracted.sra".into()];
 
-    let groups = group_saves(files, Grouping::force_split());
+    let groups = group_saves(files, Grouping::force_split(&None));
 
-    assert_eq!(groups.0.len(), 1);
+    assert_eq!(groups.len(), 1);
 
     let (name, value) = groups.0.first().unwrap();
 
@@ -487,7 +554,79 @@ mod tests {
       value.save_file(SaveType::Sram),
       &Some("folder/extracted.sra".try_into().expect("File name is ok"))
     );
-    check_empty_files(&value, SaveFlag::ALL & !SaveFlag::SRA);
+    check_all_empty_saves_but(&value, &[Sram]);
+  }
+
+  #[test]
+  fn verify_split_grouping_mupen() {
+    let input = vec!["A.srm".into(), "F.mpk3".into()];
+
+    let group = group_saves(
+      input,
+      Grouping::force_split(&None).set_merge_controller_pack(true),
+    );
+
+    assert_eq!(group.len(), 1);
+
+    let (name, params) = group.first().unwrap();
+
+    assert_eq!(name, "A");
+    assert_eq!(params.mode(), &ConvertMode::Split);
+    assert_eq!(params.srm_file(), &"A".into());
+    assert_eq!(
+      params.save_file(ControllerPackKind::Mupen),
+      &Some(
+        SaveFile::try_from("F.mpk3")
+          .expect("File name is ok")
+          .try_change_type(ControllerPackKind::Mupen)
+          .expect("should change")
+      )
+    );
+    check_all_empty_saves_but(&params, &[Player1.into()]);
+  }
+
+  #[test]
+  fn verify_split_grouping_mupen_existing() {
+    use ControllerPackKind::Mupen;
+
+    let data = TempDir::new().expect("tmp dir created");
+    let a_path = data.child("A.srm").to_path_buf();
+    let f_path = data.child("F.mpk3").to_path_buf();
+
+    {
+      let file = fs::File::create(&a_path).expect("file should not exist");
+      file
+        .set_len(0x48800)
+        .expect("file should have changed size");
+    }
+
+    let input = vec![a_path.clone(), f_path.clone()];
+
+    let group = group_saves(
+      input,
+      Grouping::force_split(&None).set_merge_controller_pack(true),
+    );
+
+    assert_eq!(group.len(), 1);
+
+    let (name, params) = group.first().unwrap();
+
+    assert_eq!(name, "A");
+    assert_eq!(params.mode(), &ConvertMode::Split);
+    assert_eq!(
+      params.srm_file(),
+      &SrmFile::try_from(a_path).expect("file is ok")
+    );
+    assert_eq!(
+      params.save_file(Mupen),
+      &Some(
+        SaveFile::try_from(f_path)
+          .expect("File is mpk")
+          .try_change_type(Mupen)
+          .expect("should change")
+      )
+    );
+    check_all_empty_saves_but(&params, &[Player1.into()]);
   }
 
   #[test]
@@ -501,7 +640,7 @@ mod tests {
       "actual.srm".into(),
     ];
 
-    let groups = group_saves(files, Grouping::force_split());
+    let groups = group_saves(files, Grouping::force_split(&None));
 
     assert_eq!(groups.0.len(), 1);
 
@@ -515,10 +654,10 @@ mod tests {
       &Some("real.sra".try_into().expect("File name is ok"))
     );
     assert_eq!(
-      value.save_file(ControllerPackKind::Player1.into()),
+      value.save_file(ControllerPackKind::Player1),
       &Some("last.mpk".try_into().expect("File name is ok"))
     );
-    check_empty_files(&value, SaveFlag::ALL & !SaveFlag::CP1 & !SaveFlag::SRA);
+    check_all_empty_saves_but(&value, &[Player1.into(), Sram]);
   }
 
   #[test]

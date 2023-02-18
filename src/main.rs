@@ -1,15 +1,17 @@
+mod grouping;
+
 use std::fmt::Debug;
 use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use grouping::{group_saves, validate_groups, Grouping};
+
 use clap::Parser;
 
 use log::{debug, error, info};
 
-use ramp64_srm_convert_lib::{
-  convert, group_saves, validate_groups, BaseArgs, ConvertMode, Grouping, Problem,
-};
+use ramp64_srm_convert_lib::{convert, BaseArgs, ConvertMode, Problem};
 
 use simplelog::SimpleLogger;
 
@@ -62,8 +64,12 @@ fn main() -> ExitCode {
 
   // init our simple logger
   let _ = SimpleLogger::init(
-    std::mem::take(&mut args.verbosity).into(),
-    simplelog::ConfigBuilder::new().build(),
+    args.verbosity.into(),
+    simplelog::ConfigBuilder::new()
+      .set_time_level(log::LevelFilter::Off)
+      .set_thread_level(log::LevelFilter::Off)
+      .set_target_level(log::LevelFilter::Off)
+      .build(),
   );
 
   if args.split_srm {
@@ -87,19 +93,19 @@ fn main() -> ExitCode {
     }
   }
 
-  debug!("\n--- Grouping file(s) ---");
+  debug!("--- Grouping file(s) ---");
   let groups = group_saves(std::mem::take(&mut args.files), {
     if args.create_srm {
-      Grouping::force_create()
+      Grouping::force_create(&args.base.output_dir)
     } else if args.split_srm {
-      Grouping::force_split()
+      Grouping::force_split(&args.base.output_dir)
     } else {
-      Grouping::automatic()
+      Grouping::automatic(&args.base.output_dir)
     }
     .set_merge_controller_pack(args.base.merge_mempacks)
   });
 
-  debug!("\n--- Validating group(s) ---");
+  debug!("--- Validating group(s) ---");
 
   let invalid_groups = validate_groups(&groups);
   if !invalid_groups.is_empty() {

@@ -597,7 +597,9 @@ fn verify_split_srm_mupen_mempack_2() -> TestResult<()> {
       .set_out_dir(data.out_dir()),
   )?;
 
-  split_run.success();
+  split_run
+    .success()
+    .stdout(predicate::str::contains("Could not set controller pack as a Mupen file").not());
 
   let out_dir = data.out_dir();
 

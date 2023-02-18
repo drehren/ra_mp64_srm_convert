@@ -85,7 +85,7 @@ pub fn convert(params: ConvertParams, args: &BaseArgs) -> crate::Result {
 }
 
 /// Provides the parameters to apply a conversion
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ConvertParams {
   mode: ConvertMode,
   file: SrmFile,
@@ -133,10 +133,6 @@ impl ConvertParams {
     }
   }
 
-  pub(crate) fn set_paths(self, paths: SrmPaths) -> Self {
-    Self { paths, ..self }
-  }
-
   /// Gets the conversion [mode](ConvertMode) these parameters would apply.
   ///
   /// # Examples
@@ -146,7 +142,7 @@ impl ConvertParams {
   ///
   /// let split_params = ConvertParams::new(ConvertMode::Split, "File.srm".into());
   ///
-  /// assert_eq!(split_file.mode(), &ConvertMode::Split);
+  /// assert_eq!(split_params.mode(), &ConvertMode::Split);
   /// ```
   pub fn mode(&self) -> &ConvertMode {
     &self.mode
@@ -173,7 +169,6 @@ impl ConvertParams {
   ///
   /// ```
   /// use ramp64_srm_convert_lib::{ConvertParams, ConvertMode, SaveType, ControllerPackKind};
-  /// use ControllerPackKind::*;
   ///
   /// let params = ConvertParams::new(ConvertMode::Create, "File".into());
   ///
@@ -181,20 +176,16 @@ impl ConvertParams {
   /// let sra_file = params.save_file(SaveType::Sram);     // Gets the SRAM file path
   /// let fla_file = params.save_file(SaveType::FlashRam); // Gets the FlashRam file path
   ///
-  /// let cp1_file = params.save_file(Into::<SaveType>::into(Player1)); // Gets the first Controller Pack file path
-  /// let cp2_file = params.save_file(Into::<SaveType>::into(Player2)); // Gets the second Controller Pack file path
-  /// let cp3_file = params.save_file(Into::<SaveType>::into(Player3)); // Gets the third Controller Pack file path
-  /// let cp4_file = params.save_file(Into::<SaveType>::into(Player4)); // Gets the fourth Controller Pack file path
+  /// let cp1_file = params.save_file(ControllerPackKind::Player1); // Gets the first Controller Pack file path
+  /// let cp2_file = params.save_file(ControllerPackKind::Player2); // Gets the second Controller Pack file path
+  /// let cp3_file = params.save_file(ControllerPackKind::Player3); // Gets the third Controller Pack file path
+  /// let cp4_file = params.save_file(ControllerPackKind::Player4); // Gets the fourth Controller Pack file path
   ///
-  /// let mupen_cp = params.save_file(ControllerPackKind::Mupen.into()); // Gets the Mupen Controller Pack file path
+  /// let mupen_cp = params.save_file(ControllerPackKind::Mupen); // Gets the Mupen Controller Pack file path
   /// ```
-  pub fn save_file(&self, save_type: SaveType) -> &Option<SaveFile> {
-    match save_type {
-      SaveType::Eeprom => &self.paths.eep,
-      SaveType::Sram => &self.paths.sra,
-      SaveType::FlashRam => &self.paths.fla,
-      SaveType::ControllerPack(player) => &self.paths.cp[Into::<usize>::into(player)],
-    }
+  #[inline]
+  pub fn save_file(&self, save_type: impl Into<SaveType>) -> &Option<SaveFile> {
+    self.paths.get(save_type)
   }
 
   /// Replaces the current [`ConvertMode`] with the given one, returning the old one.
@@ -288,20 +279,21 @@ impl fmt::Display for ConvertParams {
 
 /// Specifies the way to convert an SRM file
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
+#[repr(u8)]
 pub enum ConvertMode {
   /// Specify this variant to create/overwrite an SRM file
   #[default]
-  Create,
+  Create = 0,
   /// Specify this variant to split an existing SRM file
-  Split,
+  Split = 1,
 }
 
-#[derive(Debug, PartialEq, Default)]
+#[derive(Debug, PartialEq, Default, Clone)]
 pub(crate) struct SrmPaths {
-  pub(crate) eep: Option<SaveFile>,
-  pub(crate) sra: Option<SaveFile>,
-  pub(crate) fla: Option<SaveFile>,
-  pub(crate) cp: [Option<SaveFile>; 4],
+  eep: Option<SaveFile>,
+  sra: Option<SaveFile>,
+  fla: Option<SaveFile>,
+  cp: [Option<SaveFile>; 4],
 }
 
 impl SrmPaths {
@@ -320,7 +312,7 @@ impl SrmPaths {
 
   pub(crate) fn set(&mut self, save_file: SaveFile) -> Option<SaveFile> {
     use ControllerPackKind::*;
-    match save_file.save_type {
+    match save_file.save_type() {
       crate::SaveType::Eeprom => &mut self.eep,
       crate::SaveType::Sram => &mut self.sra,
       crate::SaveType::FlashRam => &mut self.fla,
@@ -355,9 +347,18 @@ impl SrmPaths {
     let SrmPaths { eep, fla, sra, cp } = self;
     [eep, fla, sra, &cp[0], &cp[1], &cp[2], &cp[3]]
       .iter()
-      .filter_map(|&f| f.as_ref().map(|p| p.file.as_path()))
+      .filter_map(|&f| f.as_ref().map(|p| p.as_ref()))
       .filter(|p| !p.exists())
       .collect::<Vec<_>>()
+  }
+
+  pub(crate) fn get(&self, save_type: impl Into<SaveType>) -> &Option<SaveFile> {
+    match save_type.into() {
+      SaveType::Eeprom => &self.eep,
+      SaveType::Sram => &self.sra,
+      SaveType::FlashRam => &self.fla,
+      SaveType::ControllerPack(player) => &self.cp[usize::from(player)],
+    }
   }
 }
 
@@ -412,10 +413,6 @@ pub(super) mod tests {
     const ALL: SaveFlag = Self::EEP | Self::FLA | Self::SRA | Self::CP;
   }
   impl SaveFlagExt for SaveFlag {}
-
-  pub(crate) fn check_empty_files(params: &ConvertParams, save_flags: SaveFlag) {
-    check_paths(&params.paths, save_flags)
-  }
 
   fn check_paths(paths: &SrmPaths, save_flags: SaveFlag) {
     if save_flags & SaveFlag::CP1 == SaveFlag::CP1 {
@@ -476,7 +473,9 @@ pub(super) mod tests {
 
     // test replace with mupen mpk
     let mut mpk: SaveFile = "M.mpk4".try_into().expect("Save name is valid");
-    mpk.save_type = SaveType::ControllerPack(ControllerPackKind::Mupen);
+    mpk = mpk
+      .try_change_type(ControllerPackKind::Mupen)
+      .expect("Change is valid");
     assert_eq!(paths.set(mpk), Some(mpk1));
 
     assert!(!paths.is_empty());
@@ -485,16 +484,16 @@ pub(super) mod tests {
 
   #[test]
   fn verify_convert_params_new() {
-    let params = ConvertParams::new(ConvertMode::Create, SrmFile::from_name("file.srm"));
+    let params = ConvertParams::new(ConvertMode::Create, "file.srm".into());
 
     assert_eq!(params.mode, ConvertMode::Create);
-    assert_eq!(params.file, SrmFile::from_name("file"));
+    assert_eq!(params.file, "file".into());
     assert_eq!(params.paths, SrmPaths::default());
   }
 
   #[test]
   fn verify_convert_params_set_eep() {
-    let mut params = ConvertParams::new(ConvertMode::Create, SrmFile::from_name("file.srm"));
+    let mut params = ConvertParams::new(ConvertMode::Create, "file.srm".into());
 
     assert!(params.paths.is_empty());
 
@@ -513,7 +512,7 @@ pub(super) mod tests {
 
   #[test]
   fn verify_convert_params_set_sram() {
-    let mut params = ConvertParams::new(ConvertMode::Create, SrmFile::from_name("file.srm"));
+    let mut params = ConvertParams::new(ConvertMode::Create, "file.srm".into());
 
     assert!(params.paths.is_empty());
 
@@ -532,7 +531,7 @@ pub(super) mod tests {
 
   #[test]
   fn verify_convert_params_set_flash_ram() {
-    let mut params = ConvertParams::new(ConvertMode::Create, SrmFile::from_name("file.srm"));
+    let mut params = ConvertParams::new(ConvertMode::Create, "file.srm".into());
 
     assert!(params.paths.is_empty());
 
@@ -553,40 +552,42 @@ pub(super) mod tests {
   fn verify_convert_params_set_mpk() {
     use ControllerPackKind::*;
 
-    let mut params = ConvertParams::new(ConvertMode::Create, SrmFile::from_name("file.srm"));
+    let mut params = ConvertParams::new(ConvertMode::Create, "file.srm".into());
 
     assert!(params.paths.is_empty());
 
     let cp: SaveFile = "save.mpk1".try_into().expect("Save name is ok");
     assert_eq!(params.set_or_replace_file(cp.clone()), None);
-    assert_eq!(params.save_file(Player1.into()), &Some(cp.clone()));
+    assert_eq!(params.save_file(Player1), &Some(cp.clone()));
 
     assert!(!params.paths.is_empty());
 
     let cp_new: SaveFile = "save.mpk2".try_into().expect("Save name is ok");
     assert_eq!(params.set_or_replace_file(cp_new.clone()), None);
-    assert_eq!(params.save_file(Player2.into()), &Some(cp_new));
+    assert_eq!(params.save_file(Player2), &Some(cp_new));
 
     let cp_new: SaveFile = "save.mpk3".try_into().expect("Save name is ok");
     assert_eq!(params.set_or_replace_file(cp_new.clone()), None);
-    assert_eq!(params.save_file(Player3.into()), &Some(cp_new));
+    assert_eq!(params.save_file(Player3), &Some(cp_new));
 
     let cp_new: SaveFile = "save.mpk4".try_into().expect("Save name is ok");
     assert_eq!(params.set_or_replace_file(cp_new.clone()), None);
-    assert_eq!(params.save_file(Player4.into()), &Some(cp_new));
+    assert_eq!(params.save_file(Player4), &Some(cp_new));
 
     // test replace by mupen
     let mut cp_new: SaveFile = "save.mpk".try_into().expect("Save name is ok");
-    cp_new.save_type = ControllerPackKind::Mupen.into();
+    cp_new = cp_new
+      .try_change_type(ControllerPackKind::Mupen)
+      .expect("Is an controller pack");
     assert_eq!(params.set_or_replace_file(cp_new.clone()), Some(cp));
-    assert_eq!(params.save_file(Mupen.into()), &Some(cp_new));
+    assert_eq!(params.save_file(Mupen), &Some(cp_new));
 
     check_paths(&params.paths, SaveFlag::ALL & !SaveFlag::CP1);
   }
 
   #[test]
   fn verify_convert_params() {
-    let mut params = ConvertParams::new(ConvertMode::Create, SrmFile::from_name("file.srm"));
+    let mut params = ConvertParams::new(ConvertMode::Create, "file.srm".into());
 
     assert_eq!(params.mode, ConvertMode::Create);
     assert_eq!(params.file, "file".into());
