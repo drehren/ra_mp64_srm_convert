@@ -133,7 +133,7 @@ mod tests {
     // put srm data...
     fs::File::create(&srm_path)
       .and_then(|mut f| {
-        let srm_data = Box::new(RetroArchSrm::new_init());
+        let srm_data = Box::new(RetroArchSrm::new());
         f.write_all(srm_data.as_ref().as_ref())
       })
       .expect("could not create/write srm file");

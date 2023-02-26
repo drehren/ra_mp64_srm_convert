@@ -2,8 +2,9 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 
 use crate::retroarch_srm::RetroArchSrm;
+use crate::save_file::By;
 use crate::{convert_params::SrmPaths, word_byte_swap, BaseArgs, OutputDir, PathError, Result};
-use crate::{ControllerPackKind, SaveType, SrmFile};
+use crate::{ControllerPackSlot, SaveType, SrmFile};
 
 macro_rules! open_write_battery {
   ($out:expr, $type:expr, $battery:expr, $out_dir:expr, $opts:expr) => {{
@@ -21,7 +22,7 @@ macro_rules! open_write_battery {
 pub(crate) fn split_srm(input_path: SrmFile, args: &BaseArgs, output: SrmPaths) -> Result {
   use crate::SaveType::*;
 
-  let mut srm = Box::<RetroArchSrm>::default();
+  let mut srm = Box::new(RetroArchSrm::new());
   File::open(&input_path)
     .and_then(|mut f| f.read_exact(srm.as_mut().as_mut()))
     .map_err(|e| PathError(input_path.clone().into(), e))?;
@@ -57,7 +58,7 @@ pub(crate) fn split_srm(input_path: SrmFile, args: &BaseArgs, output: SrmPaths) 
 
   if args.merge_mempacks {
     if srm.controller_pack.iter().any(|cp| !cp.is_empty()) {
-      use ControllerPackKind::Mupen;
+      use ControllerPackSlot::Mupen;
       let path = output.get(Mupen).as_ref().map_or_else(
         || out_dir.base_with_extension(SaveType::from(Mupen).extension()),
         |p| out_dir.to_out_dir(&p),
@@ -73,7 +74,7 @@ pub(crate) fn split_srm(input_path: SrmFile, args: &BaseArgs, output: SrmPaths) 
         .map_err(|e| PathError(path, e))?;
     }
   } else {
-    use ControllerPackKind::*;
+    use By::*;
     for (i, cp) in [Player1, Player2, Player3, Player4].into_iter().enumerate() {
       if !srm.controller_pack[i].is_empty() {
         open_write_battery!(

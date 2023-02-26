@@ -3,8 +3,8 @@ use std::{fmt, path::Path};
 use log::info;
 
 use crate::{
-  create_srm::create_srm, split_srm::split_srm, BaseArgs, ControllerPackKind, SaveFile, SaveType,
-  SrmFile,
+  create_srm::create_srm, save_file::User, split_srm::split_srm, BaseArgs, ControllerPackSlot,
+  SaveFile, SaveType, SrmFile,
 };
 
 macro_rules! display_some_path {
@@ -168,7 +168,7 @@ impl ConvertParams {
   /// # Examples
   ///
   /// ```
-  /// use ramp64_srm_convert_lib::{ConvertParams, ConvertMode, SaveType, ControllerPackKind};
+  /// use ramp64_srm_convert_lib::*;
   ///
   /// let params = ConvertParams::new(ConvertMode::Create, "File".into());
   ///
@@ -176,12 +176,12 @@ impl ConvertParams {
   /// let sra_file = params.save_file(SaveType::Sram);     // Gets the SRAM file path
   /// let fla_file = params.save_file(SaveType::FlashRam); // Gets the FlashRam file path
   ///
-  /// let cp1_file = params.save_file(ControllerPackKind::Player1); // Gets the first Controller Pack file path
-  /// let cp2_file = params.save_file(ControllerPackKind::Player2); // Gets the second Controller Pack file path
-  /// let cp3_file = params.save_file(ControllerPackKind::Player3); // Gets the third Controller Pack file path
-  /// let cp4_file = params.save_file(ControllerPackKind::Player4); // Gets the fourth Controller Pack file path
+  /// let cp1_file = params.save_file(By::Player1); // Gets the first Controller Pack file path
+  /// let cp2_file = params.save_file(By::Player2); // Gets the second Controller Pack file path
+  /// let cp3_file = params.save_file(By::Player3); // Gets the third Controller Pack file path
+  /// let cp4_file = params.save_file(By::Player4); // Gets the fourth Controller Pack file path
   ///
-  /// let mupen_cp = params.save_file(ControllerPackKind::Mupen); // Gets the Mupen Controller Pack file path
+  /// let mupen_cp = params.save_file(ControllerPackSlot::Mupen); // Gets the Mupen Controller Pack file path
   /// ```
   #[inline]
   pub fn save_file(&self, save_type: impl Into<SaveType>) -> &Option<SaveFile> {
@@ -311,34 +311,30 @@ impl SrmPaths {
   }
 
   pub(crate) fn set(&mut self, save_file: SaveFile) -> Option<SaveFile> {
-    use ControllerPackKind::*;
+    use ControllerPackSlot::*;
     match save_file.save_type() {
-      crate::SaveType::Eeprom => &mut self.eep,
-      crate::SaveType::Sram => &mut self.sra,
-      crate::SaveType::FlashRam => &mut self.fla,
-      crate::SaveType::ControllerPack(kind @ Mupen | kind @ Player1) => {
+      SaveType::Eeprom => &mut self.eep,
+      SaveType::Sram => &mut self.sra,
+      SaveType::FlashRam => &mut self.fla,
+      SaveType::ControllerPack(kind @ Mupen | kind @ Player(User::Any)) => {
         if kind == Mupen {
           self.cp = [std::mem::take(&mut self.cp[0]), None, None, None];
         }
         &mut self.cp[0]
       }
-      crate::SaveType::ControllerPack(Player2) => &mut self.cp[1],
-      crate::SaveType::ControllerPack(Player3) => &mut self.cp[2],
-      crate::SaveType::ControllerPack(Player4) => &mut self.cp[3],
+      SaveType::ControllerPack(Player(User::Used(by))) => &mut self.cp[by.index()],
     }
     .replace(save_file)
   }
 
   pub(crate) fn unset(&mut self, save_type: SaveType) -> Option<SaveFile> {
-    use ControllerPackKind::*;
+    use ControllerPackSlot::*;
     match save_type {
-      crate::SaveType::Eeprom => &mut self.eep,
-      crate::SaveType::Sram => &mut self.sra,
-      crate::SaveType::FlashRam => &mut self.fla,
-      crate::SaveType::ControllerPack(Mupen | Player1) => &mut self.cp[0],
-      crate::SaveType::ControllerPack(Player2) => &mut self.cp[1],
-      crate::SaveType::ControllerPack(Player3) => &mut self.cp[2],
-      crate::SaveType::ControllerPack(Player4) => &mut self.cp[3],
+      SaveType::Eeprom => &mut self.eep,
+      SaveType::Sram => &mut self.sra,
+      SaveType::FlashRam => &mut self.fla,
+      SaveType::ControllerPack(Mupen | Player(User::Any)) => &mut self.cp[0],
+      SaveType::ControllerPack(Player(User::Used(by))) => &mut self.cp[by.index()],
     }
     .take()
   }
@@ -353,11 +349,13 @@ impl SrmPaths {
   }
 
   pub(crate) fn get(&self, save_type: impl Into<SaveType>) -> &Option<SaveFile> {
+    use ControllerPackSlot::*;
     match save_type.into() {
       SaveType::Eeprom => &self.eep,
       SaveType::Sram => &self.sra,
       SaveType::FlashRam => &self.fla,
-      SaveType::ControllerPack(player) => &self.cp[usize::from(player)],
+      SaveType::ControllerPack(Mupen | Player(User::Any)) => &self.cp[0],
+      SaveType::ControllerPack(Player(User::Used(by))) => &self.cp[by.index()],
     }
   }
 }
@@ -396,7 +394,7 @@ pub enum Problem<'g> {
 
 #[cfg(test)]
 pub(super) mod tests {
-  use crate::SaveType;
+  use crate::{save_file::By, SaveType};
 
   use super::*;
 
@@ -474,7 +472,7 @@ pub(super) mod tests {
     // test replace with mupen mpk
     let mut mpk: SaveFile = "M.mpk4".try_into().expect("Save name is valid");
     mpk = mpk
-      .try_change_type(ControllerPackKind::Mupen)
+      .try_change_type(ControllerPackSlot::Mupen)
       .expect("Change is valid");
     assert_eq!(paths.set(mpk), Some(mpk1));
 
@@ -550,7 +548,8 @@ pub(super) mod tests {
 
   #[test]
   fn verify_convert_params_set_mpk() {
-    use ControllerPackKind::*;
+    use By::*;
+    use ControllerPackSlot::*;
 
     let mut params = ConvertParams::new(ConvertMode::Create, "file.srm".into());
 
@@ -577,7 +576,7 @@ pub(super) mod tests {
     // test replace by mupen
     let mut cp_new: SaveFile = "save.mpk".try_into().expect("Save name is ok");
     cp_new = cp_new
-      .try_change_type(ControllerPackKind::Mupen)
+      .try_change_type(ControllerPackSlot::Mupen)
       .expect("Is an controller pack");
     assert_eq!(params.set_or_replace_file(cp_new.clone()), Some(cp));
     assert_eq!(params.save_file(Mupen), &Some(cp_new));

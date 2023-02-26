@@ -20,7 +20,7 @@ use std::{
 };
 
 pub use convert_params::{convert, ConvertMode, ConvertParams, Problem};
-pub use save_file::{ControllerPackKind, SaveFile, SaveFileInferError, SaveType};
+pub use save_file::{By, ControllerPackSlot, SaveFile, SaveFileInferError, SaveType, User};
 pub use srm_file::{SrmFile, SrmFileInferError};
 
 fn word_byte_swap(buf: &mut [u8]) {

@@ -1,22 +1,44 @@
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 
 use crate::retroarch_srm::RetroArchSrm;
+use crate::save_file::By;
 use crate::{convert_params::SrmPaths, word_byte_swap, BaseArgs, OutputDir, PathError, Result};
-use crate::{ControllerPackKind, SaveType, SrmFile};
+use crate::{ControllerPackSlot, SaveType, SrmFile};
+
+trait ReadExt
+where
+  Self: Read,
+{
+  fn read_up_to(&mut self, buf: &mut [u8]) -> std::result::Result<usize, io::Error> {
+    let max_read = buf.len();
+    let mut bytes_read = 0;
+    while bytes_read < max_read {
+      match self.read(&mut buf[bytes_read..max_read]) {
+        Ok(0) => break,
+        Ok(bytes) => bytes_read += bytes,
+        Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+        Err(err) => return Err(err),
+      }
+    }
+    Ok(bytes_read)
+  }
+}
+
+impl<T> ReadExt for T where Self: Read {}
 
 macro_rules! read_battery {
   ($path_opt:expr, $battery:expr) => {{
-    $path_opt.as_ref().map_or(Ok(()), |path| {
+    $path_opt.as_ref().map_or(Ok(0usize), |path| {
       File::open(&path)
-        .and_then(|mut f| f.read_exact($battery.as_mut()))
+        .and_then(|mut f| f.read_up_to($battery.as_mut()))
         .map_err(|e| PathError(path.as_ref().into(), e))
     })
   }};
 }
 
 pub(crate) fn create_srm(output_path: SrmFile, args: &BaseArgs, input: SrmPaths) -> Result {
-  let mut srm = Box::new(RetroArchSrm::new_init());
+  let mut srm = Box::new(RetroArchSrm::new());
 
   // If the srm file exists, read it first to update
   if output_path.is_file() {
@@ -38,8 +60,8 @@ pub(crate) fn create_srm(output_path: SrmFile, args: &BaseArgs, input: SrmPaths)
   }
 
   if args.merge_mempacks {
-    if let Some(cp_path) = input.get(ControllerPackKind::Mupen) {
-      File::open(&cp_path)
+    if let Some(cp_path) = input.get(ControllerPackSlot::Mupen) {
+      File::open(cp_path)
         .and_then(|mut f| {
           for i in 0..4 {
             f.read_exact(srm.controller_pack[i].as_mut())?
@@ -49,7 +71,7 @@ pub(crate) fn create_srm(output_path: SrmFile, args: &BaseArgs, input: SrmPaths)
         .map_err(|e| PathError(cp_path.clone().into(), e))?;
     }
   } else {
-    use ControllerPackKind::*;
+    use By::*;
     for (i, cp) in [Player1, Player2, Player3, Player4].into_iter().enumerate() {
       read_battery!(input.get(cp), srm.controller_pack[i])?;
     }
@@ -64,4 +86,27 @@ pub(crate) fn create_srm(output_path: SrmFile, args: &BaseArgs, input: SrmPaths)
     .open(&out_path)
     .and_then(|mut f| f.write_all(srm.as_ref().as_ref()))
     .map_err(|e| PathError(out_path, e))
+}
+
+#[cfg(test)]
+mod tests {
+  use std::io::{Cursor, Read};
+
+  use crate::create_srm::ReadExt;
+
+  #[test]
+  fn test_read_ext() {
+    let data = b"Hello World!";
+
+    let mut buf = [0u8; 15];
+
+    let mut cursor = Cursor::new(data);
+    cursor.read_exact(&mut buf).expect_err("buffer is larger");
+
+    cursor.set_position(0);
+
+    let len = cursor.read_up_to(&mut buf).expect("idk");
+
+    assert_eq!(buf[..len], data[..]);
+  }
 }

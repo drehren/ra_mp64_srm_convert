@@ -15,15 +15,17 @@ pub(crate) struct ControllerPack {
   pages: [Page; 123],
 }
 
-impl Default for ControllerPack {
-  fn default() -> Self {
-    Self {
+impl ControllerPack {
+  pub(crate) fn new() -> Self {
+    let mut me = Self {
       id_sector: IdSector::default(),
       index_table: IndexTable::default(),
       index_table_bkp: IndexTable::default(),
       note_table: NoteTable::default(),
       pages: [Page::default(); 123],
-    }
+    };
+    Initializer::init(&mut me);
+    me
   }
 }
 
@@ -170,40 +172,35 @@ impl Default for Page {
   }
 }
 
-pub(crate) struct ControllerPackInitializer;
-impl ControllerPackInitializer {
-  pub(crate) fn new() -> Self {
-    Self {}
-  }
-}
+struct Initializer;
 
 const MUPEN64_SERIAL: [u8; 24] = [
   0xff, 0xff, 0xff, 0xff, 0x05, 0x1a, 0x5f, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
   0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
 ];
 
-impl ControllerPackInitializer {
-  pub(crate) fn init(&mut self, controller_pack: &mut ControllerPack) {
-    self.init_id_sector(&mut controller_pack.id_sector);
-    self.init_index_table(&mut controller_pack.index_table);
+impl Initializer {
+  fn init(controller_pack: &mut ControllerPack) {
+    Self::init_id_sector(&mut controller_pack.id_sector);
+    Self::init_index_table(&mut controller_pack.index_table);
     controller_pack.index_table_bkp = controller_pack.index_table;
   }
 
-  fn init_id_sector(&mut self, id_sector: &mut IdSector) {
+  fn init_id_sector(id_sector: &mut IdSector) {
     id_sector.label = from_fn(|i| i as u8);
     id_sector.label[0] = 0x81;
-    self.init_id_block(&mut id_sector.id_block);
+    Self::init_id_block(&mut id_sector.id_block);
     id_sector.id_block_bk1 = id_sector.id_block;
     id_sector.id_block_bk2 = id_sector.id_block;
     id_sector.id_block_bk3 = id_sector.id_block;
   }
 
-  fn id_block_serial(&mut self, serial: &mut [u8; 24]) {
+  fn id_block_serial(serial: &mut [u8; 24]) {
     *serial = MUPEN64_SERIAL;
   }
 
-  fn init_id_block(&mut self, id_block: &mut IdBlock) {
-    self.id_block_serial(&mut id_block.serial);
+  fn init_id_block(id_block: &mut IdBlock) {
+    Self::id_block_serial(&mut id_block.serial);
 
     id_block.unused1 = 0xff;
     id_block.dev_id = 0xff;
@@ -214,7 +211,7 @@ impl ControllerPackInitializer {
     id_block.checksum2 = id_block.calculate_checksum2();
   }
 
-  fn init_index_table(&mut self, table: &mut IndexTable) {
+  fn init_index_table(table: &mut IndexTable) {
     table.unused1 = 0;
     table.checksum = 113; // 3 * 246 / 2 u8 wrapped
     table.unused2.fill(0);
@@ -224,18 +221,14 @@ impl ControllerPackInitializer {
 
 #[cfg(test)]
 mod tests {
-  use super::{ControllerPack, ControllerPackInitializer};
+  use crate::controller_pack::Initializer;
+
+  use super::ControllerPack;
 
   #[test]
   fn init_pack() {
-    let mut cp = ControllerPack::default();
-
-    assert!(!cp.is_empty());
-
-    let mut pack_init = ControllerPackInitializer::new();
-
-    pack_init.init(&mut cp);
-
+    let mut cp = ControllerPack::new();
+    Initializer::init(&mut cp);
     assert!(cp.is_empty());
     assert_eq!(cp.index_table_bkp, cp.index_table);
     assert_eq!(

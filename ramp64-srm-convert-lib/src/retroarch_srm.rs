@@ -1,13 +1,23 @@
-use crate::controller_pack::{ControllerPack, ControllerPackInitializer};
+use crate::controller_pack::ControllerPack;
 use crate::game_pack::{Eeprom, FlashRam, Sram};
 
 #[repr(C)]
-#[derive(Default)]
 pub(crate) struct RetroArchSrm {
   pub eeprom: Eeprom,
   pub controller_pack: [ControllerPack; 4],
   pub sram: Sram,
   pub flashram: FlashRam,
+}
+
+impl RetroArchSrm {
+  pub(crate) fn new() -> Self {
+    Self {
+      eeprom: Eeprom::default(),
+      controller_pack: [ControllerPack::new(); 4],
+      sram: Sram::default(),
+      flashram: FlashRam::default(),
+    }
+  }
 }
 
 impl AsRef<[u8]> for RetroArchSrm {
@@ -25,26 +35,13 @@ impl AsMut<[u8]> for RetroArchSrm {
   }
 }
 
-impl RetroArchSrm {
-  pub fn new_init() -> Self {
-    let mut me = Self::default();
-
-    let mut pack_init = ControllerPackInitializer::new();
-    for pack in &mut me.controller_pack {
-      pack_init.init(pack);
-    }
-
-    me
-  }
-}
-
 #[cfg(test)]
 mod tests {
   use super::RetroArchSrm;
 
   #[test]
   fn srm_data() {
-    let srm = RetroArchSrm::default();
+    let srm = RetroArchSrm::new();
 
     let srm_data = srm.as_ref().to_vec();
 
@@ -70,7 +67,7 @@ mod tests {
 
   #[test]
   fn srm_init() {
-    let srm = RetroArchSrm::new_init();
+    let srm = RetroArchSrm::new();
 
     assert!(srm.eeprom.is_empty());
     assert!(srm.sram.is_empty());
