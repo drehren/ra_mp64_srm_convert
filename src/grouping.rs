@@ -6,20 +6,20 @@ use std::path::PathBuf;
 use log::{debug, error, info, warn};
 
 use ramp64_srm_convert_lib::{
-  ControllerPackSlot, ConvertMode, ConvertParams, OutputDir, Problem, SaveFile, SaveFileInferError,
+  ControllerPackSlot, ConvertMode, ConvertParams, CreateError, OutputDir, Problem, SaveFile,
   SaveType, SrmFile,
 };
 
 #[derive(Debug)]
 pub(crate) struct InvalidGroup<'g> {
   key: &'g str,
-  mode: &'g ConvertMode,
+  mode: ConvertMode,
   file: &'g SrmFile,
   problem: Problem<'g>,
 }
 
 impl<'g> InvalidGroup<'g> {
-  fn new(key: &'g str, mode: &'g ConvertMode, file: &'g SrmFile, problem: Problem<'g>) -> Self {
+  fn new(key: &'g str, mode: ConvertMode, file: &'g SrmFile, problem: Problem<'g>) -> Self {
     Self {
       key,
       mode,
@@ -37,7 +37,7 @@ impl<'g> InvalidGroup<'g> {
     &self.problem
   }
   /// Gets the mode the problem arose from
-  pub fn mode(&self) -> &ConvertMode {
+  pub fn mode(&self) -> ConvertMode {
     self.mode
   }
 
@@ -163,7 +163,7 @@ pub fn group_saves(files: Vec<PathBuf>, opts: Grouping) -> GroupedSaves {
     // determine if this is an SrmFile or an SaveFile
     let valid_file = match SaveFile::try_from(path.clone()) {
       Ok(save_file) => ValidFile::Save(save_file),
-      Err(SaveFileInferError::IsAnSrmFile) => match SrmFile::try_from(path) {
+      Err(CreateError::IsASrm) => match SrmFile::try_from(path) {
         Ok(srm_file) => ValidFile::Srm(srm_file),
         Err(err) => {
           warn!("Not a valid file: {err}");
@@ -231,7 +231,7 @@ pub fn group_saves(files: Vec<PathBuf>, opts: Grouping) -> GroupedSaves {
       );
 
       // get the mode so we know which files should change output
-      let mode = *params.mode();
+      let mode = params.mode();
 
       for mut save_file in paths {
         let save_type = save_file.save_type();
@@ -245,7 +245,7 @@ pub fn group_saves(files: Vec<PathBuf>, opts: Grouping) -> GroupedSaves {
           if opts.merge_cp && matches!(save_type, ControllerPack(Player(_))) {
             let real_path = SaveFile::try_from(out.to_out_dir(&save_file))
               .expect("lib failing to support file dir change");
-            save_file = match real_path.try_change_type(Mupen) {
+            save_file = match SaveFile::try_new(real_path, Mupen.into()) {
               Ok(real_file) => real_file,
               Err(err) => {
                 error!("Could not set controller pack as Mupen: {err}");
@@ -410,13 +410,13 @@ mod tests {
       match key {
         "A" | "C" => {
           // simple auto-name split
-          assert_eq!(value.mode(), &ConvertMode::Split);
+          assert_eq!(value.mode(), ConvertMode::Split);
           assert_eq!(value.srm_file(), &key.into());
           check_all_empty_saves_but(&value, &[]);
         }
         "B" => {
           // split to named mpk
-          assert_eq!(value.mode(), &ConvertMode::Split);
+          assert_eq!(value.mode(), ConvertMode::Split);
           assert_eq!(value.srm_file(), &key.into());
           assert_eq!(
             value.save_file(By::Player1),
@@ -426,7 +426,7 @@ mod tests {
         }
         "B1" => {
           // create from B1.eep, no srm given
-          assert_eq!(value.mode(), &ConvertMode::Create);
+          assert_eq!(value.mode(), ConvertMode::Create);
           assert_eq!(value.srm_file(), &key.into());
           assert_eq!(
             value.save_file(SaveType::Eeprom),
@@ -436,7 +436,7 @@ mod tests {
         }
         "D" => {
           // create from D.fla & folder/D.mpk, to D.srm
-          assert_eq!(value.mode(), &ConvertMode::Create);
+          assert_eq!(value.mode(), ConvertMode::Create);
           assert_eq!(value.srm_file(), &key.into());
           assert_eq!(
             value.save_file(By::Player1),
@@ -467,7 +467,7 @@ mod tests {
     let (name, value) = groups.0.first().unwrap();
 
     assert_eq!(name, "A");
-    assert_eq!(value.mode(), &ConvertMode::Split);
+    assert_eq!(value.mode(), ConvertMode::Split);
     assert_eq!(value.srm_file(), &"folder2/A".into());
     check_all_empty_saves_but(value, &[]);
   }
@@ -483,7 +483,7 @@ mod tests {
     let (name, value) = groups.0.first().unwrap();
 
     assert_eq!(name, "Space");
-    assert_eq!(value.mode(), &ConvertMode::Create);
+    assert_eq!(value.mode(), ConvertMode::Create);
     assert_eq!(value.srm_file(), &"Space".into());
     assert_eq!(
       value.save_file(By::Player1),
@@ -513,7 +513,7 @@ mod tests {
     let (name, value) = groups.0.first().unwrap();
 
     assert_eq!(name, "initial");
-    assert_eq!(value.mode(), &ConvertMode::Create);
+    assert_eq!(value.mode(), ConvertMode::Create);
     assert_eq!(value.srm_file(), &"actual".into());
     assert_eq!(
       value.save_file(SaveType::Sram),
@@ -537,7 +537,7 @@ mod tests {
     let (name, value) = groups.0.first().unwrap();
 
     assert_eq!(name, "Space");
-    assert_eq!(value.mode(), &ConvertMode::Split);
+    assert_eq!(value.mode(), ConvertMode::Split);
     assert_eq!(value.srm_file(), &"Space".into());
     assert_eq!(
       value.save_file(SaveType::Sram),
@@ -560,16 +560,11 @@ mod tests {
     let (name, params) = group.first().unwrap();
 
     assert_eq!(name, "A");
-    assert_eq!(params.mode(), &ConvertMode::Split);
+    assert_eq!(params.mode(), ConvertMode::Split);
     assert_eq!(params.srm_file(), &"A".into());
     assert_eq!(
       params.save_file(ControllerPackSlot::Mupen),
-      &Some(
-        SaveFile::try_from("F.mpk3")
-          .expect("File name is ok")
-          .try_change_type(ControllerPackSlot::Mupen)
-          .expect("should change")
-      )
+      &Some(SaveFile::try_new("F.mpk3", ControllerPackSlot::Mupen.into()).expect("File is mpk"))
     );
     check_all_empty_saves_but(&params, &[ControllerPackSlot::Mupen.into()]);
   }
@@ -601,19 +596,14 @@ mod tests {
     let (name, params) = group.first().unwrap();
 
     assert_eq!(name, "A");
-    assert_eq!(params.mode(), &ConvertMode::Split);
+    assert_eq!(params.mode(), ConvertMode::Split);
     assert_eq!(
       params.srm_file(),
       &SrmFile::try_from(a_path).expect("file is ok")
     );
     assert_eq!(
       params.save_file(Mupen),
-      &Some(
-        SaveFile::try_from(f_path)
-          .expect("File is mpk")
-          .try_change_type(Mupen)
-          .expect("should change")
-      )
+      &Some(SaveFile::try_new(f_path, Mupen.into()).expect("File is mpk"))
     );
     check_all_empty_saves_but(&params, &[Mupen.into()]);
   }
@@ -636,7 +626,7 @@ mod tests {
     let (name, value) = groups.0.first().unwrap();
 
     assert_eq!(name, "this_not_it");
-    assert_eq!(value.mode(), &ConvertMode::Split);
+    assert_eq!(value.mode(), ConvertMode::Split);
     assert_eq!(value.srm_file(), &"actual".into());
     assert_eq!(
       value.save_file(SaveType::Sram),
@@ -667,7 +657,7 @@ mod tests {
     assert_eq!(invalids.len(), 2);
 
     assert_eq!(invalids[0].key, "A");
-    assert_eq!(invalids[0].mode, &ConvertMode::Split);
+    assert_eq!(invalids[0].mode, ConvertMode::Split);
     assert_eq!(invalids[0].file, &("A".into()));
     assert_eq!(
       invalids[0].problem,
@@ -675,7 +665,7 @@ mod tests {
     );
 
     assert_eq!(invalids[1].key, "B");
-    assert_eq!(invalids[1].mode, &ConvertMode::Create);
+    assert_eq!(invalids[1].mode, ConvertMode::Create);
     assert_eq!(invalids[1].file, &("B".into()));
     assert_eq!(invalids[1].problem, Problem::NoInput);
   }

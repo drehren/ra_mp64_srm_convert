@@ -1,12 +1,15 @@
 use std::{
-  error, fmt, fs,
-  io::{self, Read, Seek},
+  fmt, fs,
+  io::{Read, Seek},
   ops::Deref,
   path::{Path, PathBuf},
   result,
 };
 
-use crate::controller_pack::{self, ControllerPack};
+use crate::{
+  controller_pack::{self, ControllerPack},
+  CreateError,
+};
 
 /// Defines an specific save file
 #[derive(Debug, Clone, PartialEq)]
@@ -15,27 +18,15 @@ pub struct SaveFile {
   file: PathBuf,
 }
 
-#[derive(Debug)]
-pub enum CreateError {
-  NotAFile,
-  FileTooLarge,
-  AnotherType(SaveType),
-  IsAnSrm,
-  Other(io::Error),
-}
-
-impl From<io::Error> for CreateError {
-  fn from(value: io::Error) -> Self {
-    Self::Other(value)
-  }
-}
-
 impl SaveFile {
   /// Tries to create an [SaveFile] from the specified path and type.
   pub fn try_new(
     path: impl AsRef<std::path::Path>,
     save_type: SaveType,
   ) -> Result<Self, CreateError> {
+    use ControllerPackSlot::*;
+    use SaveType::*;
+
     if !path.as_ref().exists() {
       return Ok(Self {
         file: path.as_ref().to_path_buf(),
@@ -43,7 +34,7 @@ impl SaveFile {
       });
     }
     if !path.as_ref().is_file() {
-      return Err(CreateError::NotAFile);
+      return Err(CreateError::IsADir);
     }
 
     // Now try check.. don't like reading the actual file but there is nothing I can do
@@ -51,18 +42,19 @@ impl SaveFile {
     fs::File::open(&path)
       .map_err(CreateError::Other)
       .and_then(|mut f| {
-        // first check that the existing file is not a compressed srm
-        let mut buf = [0u8; 8];
-        f.read_exact(&mut buf)?;
-        if &buf == b"#RZIPv1#" {
-          return Err(CreateError::IsAnSrm);
-        }
-        f.rewind()?;
-
         let file_len = f.metadata()?.len();
 
-        use ControllerPackSlot::*;
-        use SaveType::*;
+        if file_len == 0 {
+          return Err(CreateError::FileEmpty);
+        } else if file_len >= 8 {
+          // first check that the existing file is not a compressed srm
+          let mut buf = [0u8; 8];
+          f.read_exact(&mut buf)?;
+          if &buf == b"#RZIPv1#" {
+            return Err(CreateError::IsASrm);
+          }
+          f.rewind()?;
+        }
 
         let is_file_cp = file_len == 0x8000
           || file_len == 0x20000
@@ -109,68 +101,26 @@ impl SaveFile {
     self.save_type
   }
 
-  /// Attempts to change the type of the current [SaveFile].
-  ///
-  /// ### Compatible changes:
-  /// - If file does not exist: All <-> All
-  /// - If file does exists: Only player Controller Packs can be changed
-  pub fn try_change_type(
-    self,
-    new_save_type: impl Into<SaveType>,
-  ) -> result::Result<Self, ConvertTypeError> {
-    let Self { file, save_type } = self;
-    let new_save_type = new_save_type.into();
-    if matches!(save_type, SaveType::ControllerPack(_)) {
-      if file.exists() {
-        if new_save_type == ControllerPackSlot::Mupen.into() && save_type == new_save_type {
-          Ok(Self { file, save_type })
-        } else if new_save_type != ControllerPackSlot::Mupen.into()
-          && save_type != ControllerPackSlot::Mupen.into()
-        {
-          Ok(Self {
-            file,
-            save_type: new_save_type,
-          })
-        } else {
-          Err(ConvertTypeError::ExistingOkPlayerToMupen)
-        }
-      } else {
-        Ok(Self {
-          file,
-          save_type: new_save_type,
-        })
-      }
-    } else {
-      #[allow(clippy::collapsible_else_if)]
-      if !file.exists() {
-        Ok(Self {
-          file,
-          save_type: new_save_type,
-        })
-      } else {
-        Err(ConvertTypeError::FileExistsNoCp)
-      }
-    }
-  }
-
-  pub(crate) fn from_file_len<P: AsRef<Path>>(path: P) -> result::Result<Self, SaveFileInferError> {
+  pub(crate) fn from_file_len<P: AsRef<Path>>(path: P) -> result::Result<Self, CreateError> {
     fs::File::open(&path)
       .map_err(|e| e.into())
       .and_then(|mut file| {
-        let metadata = file.metadata()?;
+        let file_len = file.metadata()?.len();
 
-        // check rzip_stream magic number, first 8 bytes
-        // (https://github.com/libretro/RetroArch/blob/master/libretro-common/streams/rzip_stream.c)
-        if metadata.len() > 8 {
+        if file_len == 0 {
+          return Err(CreateError::FileEmpty);
+        } else if file_len > 8 {
+          // check rzip_stream magic number, first 8 bytes
+          // (https://github.com/libretro/RetroArch/blob/master/libretro-common/streams/rzip_stream.c)
           let mut magic = [0u8; 8];
           file.read_exact(&mut magic)?;
           if &magic == b"#RZIPv1#" {
-            return Err(SaveFileInferError::IsAnSrmFile);
+            return Err(CreateError::IsASrm);
           }
           file.rewind()?;
         }
 
-        match metadata.len() {
+        match file_len {
           // 4Kbit or 16Kbit eeprom
           0x1..=0x800 => Ok(SaveType::Eeprom),
           // 256Kbit sram or controller pack
@@ -197,9 +147,9 @@ impl SaveFile {
             })
             .map_err(|e| e.into()),
           // uncompressed retroarch srm save size
-          0x48800 => Err(SaveFileInferError::IsAnSrmFile),
+          0x48800 => Err(CreateError::IsASrm),
           // unknown
-          _ => Err(SaveFileInferError::UnknownFile),
+          _ => Err(CreateError::FileTooLarge),
         }
       })
       .map(|save_type| Self {
@@ -208,15 +158,13 @@ impl SaveFile {
       })
   }
 
-  pub(crate) fn from_extension<P: AsRef<Path>>(
-    path: P,
-  ) -> result::Result<Self, SaveFileInferError> {
+  pub(crate) fn from_extension<P: AsRef<Path>>(path: P) -> result::Result<Self, CreateError> {
     use ControllerPackSlot as Slot;
     use SaveType::*;
     path
       .as_ref()
       .extension()
-      .ok_or_else(|| SaveFileInferError::NoExtension)
+      .ok_or_else(|| CreateError::NoExtension)
       .and_then(|ext| match ext.to_ascii_uppercase().to_str() {
         Some("SRA") => Ok(Sram),
         Some("FLA") => Ok(FlashRam),
@@ -226,8 +174,8 @@ impl SaveFile {
         Some("MPK2") => Ok(ControllerPack(Slot::Player(User::Used(By::Player2)))),
         Some("MPK3") => Ok(ControllerPack(Slot::Player(User::Used(By::Player3)))),
         Some("MPK4") => Ok(ControllerPack(Slot::Player(User::Used(By::Player4)))),
-        Some("SRM") => Err(SaveFileInferError::IsAnSrmFile),
-        _ => Err(SaveFileInferError::UnknownFile),
+        Some("SRM") => Err(CreateError::IsASrm),
+        _ => Err(CreateError::UnknownExtension),
       })
       .map(|save_type| Self {
         save_type,
@@ -237,7 +185,7 @@ impl SaveFile {
 }
 
 impl TryFrom<&str> for SaveFile {
-  type Error = SaveFileInferError;
+  type Error = CreateError;
 
   fn try_from(value: &str) -> result::Result<Self, Self::Error> {
     Self::from_extension(Path::new(value))
@@ -245,9 +193,9 @@ impl TryFrom<&str> for SaveFile {
 }
 
 impl TryFrom<PathBuf> for SaveFile {
-  type Error = SaveFileInferError;
+  type Error = CreateError;
 
-  fn try_from(path: PathBuf) -> result::Result<Self, SaveFileInferError> {
+  fn try_from(path: PathBuf) -> result::Result<Self, CreateError> {
     if path.exists() {
       Self::from_file_len(&path)
     } else {
@@ -272,52 +220,6 @@ impl From<SaveFile> for PathBuf {
     value.file
   }
 }
-
-/// Defines a [SaveFile] inference error
-#[derive(Debug)]
-pub enum SaveFileInferError {
-  /// The specified file is an SRM file
-  IsAnSrmFile,
-  /// The specified file is unknown
-  UnknownFile,
-  /// The specified path did not contain a file extension
-  NoExtension,
-  /// An Io error
-  IoError(io::Error),
-}
-impl From<io::Error> for SaveFileInferError {
-  fn from(value: io::Error) -> Self {
-    Self::IoError(value)
-  }
-}
-impl fmt::Display for SaveFileInferError {
-  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    match self {
-      Self::IsAnSrmFile => f.write_str("is an SRM save"),
-      Self::UnknownFile => f.write_str("unknown save file"),
-      Self::NoExtension => f.write_str("path did not have a known extension"),
-      Self::IoError(err) => f.write_fmt(format_args!("{err}")),
-    }
-  }
-}
-impl error::Error for SaveFileInferError {}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum ConvertTypeError {
-  ExistingOkPlayerToMupen,
-  FileExistsNoCp,
-}
-
-impl fmt::Display for ConvertTypeError {
-  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    match self {
-      Self::ExistingOkPlayerToMupen => f.write_str("player to/from mupen and file exists"),
-      Self::FileExistsNoCp => f.write_str("cannot change if file exists and not a controller pack"),
-    }
-  }
-}
-
-impl error::Error for ConvertTypeError {}
 
 /// The save types handled by the program
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
@@ -351,14 +253,14 @@ impl SaveType {
 }
 
 impl fmt::Display for SaveType {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
       SaveType::Eeprom => f.write_str("EEPROM"),
       SaveType::Sram => f.write_str("SRAM"),
       SaveType::FlashRam => f.write_str("FlashRAM"),
       SaveType::ControllerPack(ControllerPackSlot::Mupen) => f.write_str("Mupen Controller Pack"),
       SaveType::ControllerPack(ControllerPackSlot::Player(User::Any)) => {
-        f.write_fmt(format_args!("Controller Pack"))
+        f.write_fmt(format_args!("Player Controller Pack"))
       }
       SaveType::ControllerPack(ControllerPackSlot::Player(User::Used(by))) => {
         f.write_fmt(format_args!("Controller Pack {}", by.index() + 1))
@@ -885,12 +787,12 @@ mod tests {
       // assert creating other for other existing files
       assert_eq!(
         SaveFile::try_new(&srm_file, *save_type),
-        Err(CreateError::IsAnSrm)
+        Err(CreateError::IsASrm)
       );
 
       assert_eq!(
         SaveFile::try_new(tmp_dir.path(), *save_type),
-        Err(CreateError::NotAFile)
+        Err(CreateError::IsADir)
       );
 
       for another_type in &types {

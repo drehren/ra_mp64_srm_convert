@@ -1,5 +1,10 @@
-use std::{fmt, path::Path};
+use std::{
+  collections::HashMap,
+  fmt,
+  path::{Path, PathBuf},
+};
 
+use either::Either;
 use log::info;
 
 use crate::{
@@ -111,7 +116,7 @@ impl ConvertParams {
     Self {
       mode,
       file,
-      paths: Default::default(),
+      paths: SrmPaths::default(),
     }
   }
 
@@ -144,8 +149,8 @@ impl ConvertParams {
   ///
   /// assert_eq!(split_params.mode(), &ConvertMode::Split);
   /// ```
-  pub fn mode(&self) -> &ConvertMode {
-    &self.mode
+  pub fn mode(&self) -> ConvertMode {
+    self.mode
   }
 
   /// Returns the [srm file](SrmFile) to which the conversion would apply to.
@@ -223,11 +228,20 @@ impl ConvertParams {
   }
 
   /// Sets or replaces an existing [`SaveFile`] returning the old one, if any.
+  ///
+  /// # Panics
+  ///
+  /// Panics if ```save_file```'s type an [User::Any] controller pack.
   pub fn set_or_replace_file(&mut self, save_file: SaveFile) -> Option<SaveFile> {
     self.paths.set(save_file)
   }
 
   /// Takes the [`SaveFile`] of the specified [`SaveType`] returning the old one, if any.
+  ///
+  /// # Remarks
+  ///
+  /// If ```save_type``` is an [User::Any] controller pack, this will unset any player controller
+  /// pack
   pub fn unset_file(&mut self, save_type: SaveType) -> Option<SaveFile> {
     self.paths.unset(save_type)
   }
@@ -288,59 +302,105 @@ pub enum ConvertMode {
   Split = 1,
 }
 
-#[derive(Debug, PartialEq, Default, Clone)]
+#[derive(Debug, PartialEq, Clone, Default)]
 pub(crate) struct SrmPaths {
-  eep: Option<SaveFile>,
-  sra: Option<SaveFile>,
-  fla: Option<SaveFile>,
-  cp: [Option<SaveFile>; 4],
+  files: HashMap<SaveType, PathBuf>,
 }
 
 impl SrmPaths {
   pub(crate) fn is_empty(&self) -> bool {
-    let SrmPaths { eep, fla, sra, cp } = self;
-    [eep, fla, sra].iter().all(|&p| p.is_none()) && cp.iter().all(Option::is_none)
+    self.files.is_empty()
   }
 
   pub(crate) fn any_is_file(&self) -> bool {
-    let SrmPaths { eep, sra, fla, cp } = self;
-    cp.iter()
-      .map(Option::as_ref)
-      .chain([eep.as_ref(), fla.as_ref(), sra.as_ref()])
-      .any(|o| o.map_or(false, |p| p.is_file()))
+    self.files.values().any(|f| f.is_file())
   }
 
-  pub(crate) fn set(&mut self, save_file: SaveFile) -> Option<SaveFile> {
-    use ControllerPackSlot::*;
-    match save_file.save_type() {
-      SaveType::Eeprom => &mut self.eep,
-      SaveType::Sram => &mut self.sra,
-      SaveType::FlashRam => &mut self.fla,
-      SaveType::ControllerPack(kind @ Mupen | kind @ Player(User::Any)) => {
-        if kind == Mupen {
-          self.cp = [std::mem::take(&mut self.cp[0]), None, None, None];
-        }
-        &mut self.cp[0]
-      }
-      SaveType::ControllerPack(Player(User::Used(by))) => &mut self.cp[by.index()],
+  pub(crate) fn set(&mut self, save_file: SaveFile) -> Vec<SaveFile> {
+    let SaveFile { file, save_type } = save_file;
+    if self.files.contains_key(&save_type) {
+      return self
+        .files
+        .insert(save_type, file)
+        .map(|file| vec![SaveFile { file, save_type }])
+        .unwrap_or_default();
     }
-    .replace(save_file)
+
+    let mut replaced = Vec::with_capacity(1);
+    if let SaveType::ControllerPack(slot) = save_type {
+      // pre-pack the existing packs... just in case.. 
+      let packs = self
+        .files
+        .keys()
+        .filter(|k| matches!(k, SaveType::ControllerPack(_)))
+        .copied()
+        .collect::<Vec<_>>();
+
+      match slot {
+        ControllerPackSlot::Mupen => {
+          self.files.insert(save_type, file);
+
+          // if there was a Mupen before, the code above replaced it, so..
+          replaced.extend(packs.into_iter().map(|save_type| SaveFile {
+            file: self.files.remove(&save_type).unwrap(),
+            save_type,
+          }));
+        }
+        ControllerPackSlot::Player(User::Any) => {
+          todo!()
+        }
+        ControllerPackSlot::Player(by) => {
+          self.files.insert(save_type, file);
+          if packs.len() == 1 {
+            assert!(
+              packs[0] == ControllerPackSlot::Mupen.into(),
+              "only a Mupen pack can exist here"
+            );
+            replaced.push(SaveFile {
+              file: self.files.remove(&packs[0]).unwrap(),
+              save_type: packs[0],
+            })
+          }
+        }
+      }
+    } else {
+      self.files.insert(save_type, file);
+    }
+    replaced
   }
 
   pub(crate) fn unset(&mut self, save_type: SaveType) -> Option<SaveFile> {
     use ControllerPackSlot::*;
     match save_type {
-      SaveType::Eeprom => &mut self.eep,
-      SaveType::Sram => &mut self.sra,
-      SaveType::FlashRam => &mut self.fla,
-      SaveType::ControllerPack(Mupen | Player(User::Any)) => &mut self.cp[0],
-      SaveType::ControllerPack(Player(User::Used(by))) => &mut self.cp[by.index()],
+      SaveType::Eeprom => self.eep.take(),
+      SaveType::Sram => self.sra.take(),
+      SaveType::FlashRam => self.fla.take(),
+      SaveType::ControllerPack(Mupen) => self.cp.as_mut().left().map(|f| f.take()).flatten(),
+      SaveType::ControllerPack(Player(User::Any)) => self
+        .cp
+        .as_mut()
+        .right()
+        .map(|cp| {
+          cp.iter_mut()
+            .filter(|p| p.is_some())
+            .take(1)
+            .map(|f| f.take())
+            .last()
+            .flatten()
+        })
+        .flatten(),
+      SaveType::ControllerPack(Player(User::Used(by))) => self
+        .cp
+        .as_mut()
+        .right()
+        .map(|cp| cp[by.index()].take())
+        .flatten(),
     }
-    .take()
   }
 
   pub(crate) fn get_invalid_paths(&self) -> Vec<&Path> {
     let SrmPaths { eep, fla, sra, cp } = self;
+    let cp = cp.either(|mp| [mp, None, None, None], |cp| cp);
     [eep, fla, sra, &cp[0], &cp[1], &cp[2], &cp[3]]
       .iter()
       .filter_map(|&f| f.as_ref().map(|p| p.as_ref()))
@@ -348,13 +408,14 @@ impl SrmPaths {
       .collect::<Vec<_>>()
   }
 
-  pub(crate) fn get(&self, save_type: impl Into<SaveType>) -> &Option<SaveFile> {
+  pub(crate) fn get(&self, save_type: impl Into<SaveType>) -> Option<&SaveFile> {
     use ControllerPackSlot::*;
     match save_type.into() {
-      SaveType::Eeprom => &self.eep,
-      SaveType::Sram => &self.sra,
-      SaveType::FlashRam => &self.fla,
-      SaveType::ControllerPack(Mupen | Player(User::Any)) => &self.cp[0],
+      SaveType::Eeprom => self.eep.as_ref(),
+      SaveType::Sram => self.sra.as_ref(),
+      SaveType::FlashRam => self.fla.as_ref(),
+      SaveType::ControllerPack(Mupen) => self.cp.as_ref().map_left(|f| f.as_ref()).left().flatten(),
+      SaveType::ControllerPack(Player(User::Any)) => {}
       SaveType::ControllerPack(Player(User::Used(by))) => &self.cp[by.index()],
     }
   }
@@ -470,10 +531,9 @@ pub(super) mod tests {
     check_paths(&paths, SaveFlag::ALL & !SaveFlag::CP1 & !SaveFlag::CP3);
 
     // test replace with mupen mpk
-    let mut mpk: SaveFile = "M.mpk4".try_into().expect("Save name is valid");
-    mpk = mpk
-      .try_change_type(ControllerPackSlot::Mupen)
-      .expect("Change is valid");
+    let mpk = SaveFile::try_new("M.mpk4", ControllerPackSlot::Mupen.into())
+      .expect("Controller pack naming is valid");
+
     assert_eq!(paths.set(mpk), Some(mpk1));
 
     assert!(!paths.is_empty());
@@ -574,10 +634,8 @@ pub(super) mod tests {
     assert_eq!(params.save_file(Player4), &Some(cp_new));
 
     // test replace by mupen
-    let mut cp_new: SaveFile = "save.mpk".try_into().expect("Save name is ok");
-    cp_new = cp_new
-      .try_change_type(ControllerPackSlot::Mupen)
-      .expect("Is an controller pack");
+    let cp_new =
+      SaveFile::try_new("save.mpk", ControllerPackSlot::Mupen.into()).expect("Save name is ok");
     assert_eq!(params.set_or_replace_file(cp_new.clone()), Some(cp));
     assert_eq!(params.save_file(Mupen), &Some(cp_new));
 

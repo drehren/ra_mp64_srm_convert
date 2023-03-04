@@ -12,6 +12,7 @@ license = "MIT"
 
 [dependencies]
 clap = { version = "4.1", features = ["derive"] }
+either = "1.8.1"
 log = "0.4"
 
 [dev-dependencies]

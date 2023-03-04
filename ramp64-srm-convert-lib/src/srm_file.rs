@@ -1,9 +1,11 @@
 use std::{
-  error, fmt, fs, io,
+  fs,
   ops::Deref,
   path::{Path, PathBuf},
   result,
 };
+
+use crate::CreateError;
 
 /// Specifies a typed SRM file
 #[derive(Debug, PartialEq, Clone)]
@@ -18,28 +20,28 @@ impl SrmFile {
     Self(Path::new(name.as_ref()).with_extension("srm"))
   }
 
-  fn from_file_len<P: AsRef<Path>>(path: P) -> result::Result<Self, SrmFileInferError> {
+  fn from_file_len<P: AsRef<Path>>(path: P) -> result::Result<Self, CreateError> {
     fs::File::open(path.as_ref())
-      .map_err(SrmFileInferError::Other)
+      .map_err(CreateError::Other)
       .and_then(|file| {
         if file.metadata().unwrap().len() == 0x48800 {
           Ok(Self(path.as_ref().to_path_buf()))
         } else {
-          Err(SrmFileInferError::InvalidSize)
+          Err(CreateError::InvalidSize)
         }
       })
   }
 
-  fn from_extension<P: AsRef<Path>>(path: P) -> result::Result<Self, SrmFileInferError> {
+  fn from_extension<P: AsRef<Path>>(path: P) -> result::Result<Self, CreateError> {
     let path = path.as_ref();
     path
       .extension()
-      .ok_or(SrmFileInferError::NoExtension)
+      .ok_or(CreateError::NoExtension)
       .and_then(|ext| {
         if ext.to_ascii_uppercase().to_str() == Some("SRM") {
           Ok(Self(path.to_path_buf()))
         } else {
-          Err(SrmFileInferError::InvalidExtension)
+          Err(CreateError::UnknownExtension)
         }
       })
   }
@@ -62,7 +64,7 @@ impl From<SrmFile> for PathBuf {
   }
 }
 impl TryFrom<PathBuf> for SrmFile {
-  type Error = SrmFileInferError;
+  type Error = CreateError;
 
   fn try_from(path: PathBuf) -> result::Result<Self, Self::Error> {
     if path.exists() {
@@ -77,30 +79,6 @@ impl From<&str> for SrmFile {
     Self::from_name(name)
   }
 }
-
-/// Specifies an [SrmFile] inference error
-#[derive(Debug)]
-pub enum SrmFileInferError {
-  /// The specified file was not of the expected size
-  InvalidSize,
-  /// The specified file did not contain the expected extension
-  InvalidExtension,
-  /// The specified path did not have an extension
-  NoExtension,
-  /// An Io error
-  Other(io::Error),
-}
-impl fmt::Display for SrmFileInferError {
-  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    match self {
-      Self::InvalidSize => f.write_str("invalid file size"),
-      Self::InvalidExtension => f.write_str("has not an SRM extension"),
-      Self::NoExtension => f.write_str("path did not have an extension"),
-      Self::Other(err) => f.write_fmt(format_args!("{err}")),
-    }
-  }
-}
-impl error::Error for SrmFileInferError {}
 
 #[cfg(test)]
 mod tests {

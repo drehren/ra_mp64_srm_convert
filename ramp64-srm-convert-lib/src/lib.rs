@@ -20,8 +20,8 @@ use std::{
 };
 
 pub use convert_params::{convert, ConvertMode, ConvertParams, Problem};
-pub use save_file::{By, ControllerPackSlot, SaveFile, SaveFileInferError, SaveType, User};
-pub use srm_file::{SrmFile, SrmFileInferError};
+pub use save_file::{By, ControllerPackSlot, SaveFile, SaveType, User};
+pub use srm_file::SrmFile;
 
 fn word_byte_swap(buf: &mut [u8]) {
   for i in (0..buf.len()).step_by(4) {
@@ -60,6 +60,55 @@ impl fmt::Display for PathError {
 
 impl std::error::Error for PathError {}
 type Result = std::result::Result<(), PathError>;
+
+/// An error from the construction of a [SaveFile] or [crate::SrmFile] from an existing file
+#[derive(Debug)]
+pub enum CreateError {
+  /// Specified path is a directory
+  IsADir,
+  /// Specified file is empty
+  FileEmpty,
+  /// Specified file size does not match any existing save
+  FileTooLarge,
+  /// Specified file does not have a extension
+  NoExtension,
+  /// Specified file does have an unknown extension
+  UnknownExtension,
+  /// Only when matching a [SaveFile]: specified file is an [crate::SrmFile]
+  IsASrm,
+  /// Specified file is not the passed type
+  AnotherType(SaveType),
+  /// Only when matching a [crate::SrmFile]: specified file is not of the expected size
+  InvalidSize,
+  /// An IO error
+  Other(io::Error),
+}
+
+impl From<io::Error> for CreateError {
+  fn from(value: io::Error) -> Self {
+    Self::Other(value)
+  }
+}
+
+impl fmt::Display for CreateError {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self {
+      Self::IsADir => f.write_str("path was a folder"),
+      Self::FileEmpty => f.write_str("file is empty"),
+      Self::FileTooLarge => f.write_str("file is to large for a save"),
+      Self::AnotherType(other_type) => {
+        f.write_fmt(format_args!("file actual type is {other_type}"))
+      }
+      Self::IsASrm => f.write_str("file is an SRM"),
+      Self::Other(err) => f.write_fmt(format_args!("an IO error happened: {err}")),
+      Self::NoExtension => f.write_str("file does not have an extension"),
+      Self::UnknownExtension => f.write_str("file has an unknown extension"),
+      Self::InvalidSize => f.write_str("file size was not expected"),
+    }
+  }
+}
+
+impl std::error::Error for CreateError {}
 
 /// Provides a way to get the expected output file based on a base file and an optional output
 /// directory.
