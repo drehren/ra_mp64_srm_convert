@@ -96,13 +96,12 @@ fn main() -> ExitCode {
   debug!("--- Grouping file(s) ---");
   let groups = group_saves(std::mem::take(&mut args.files), {
     if args.create_srm {
-      Grouping::force_create(&args.base.output_dir)
+      Grouping::force_create()
     } else if args.split_srm {
-      Grouping::force_split(&args.base.output_dir)
+      Grouping::force_split()
     } else {
-      Grouping::automatic(&args.base.output_dir)
+      Grouping::automatic()
     }
-    .set_merge_controller_pack(args.base.merge_mempacks)
   });
 
   debug!("--- Validating group(s) ---");

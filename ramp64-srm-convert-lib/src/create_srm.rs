@@ -1,41 +1,12 @@
-use std::fs::File;
-use std::io::{self, Read, Write};
+use std::{
+  fs::File,
+  io::{Read, Write},
+};
 
-use crate::retroarch_srm::RetroArchSrm;
-use crate::save_file::By;
-use crate::{convert_params::SrmPaths, word_byte_swap, BaseArgs, OutputDir, PathError, Result};
-use crate::{ControllerPackSlot, SaveType, SrmFile};
-
-trait ReadExt
-where
-  Self: Read,
-{
-  fn read_up_to(&mut self, buf: &mut [u8]) -> std::result::Result<usize, io::Error> {
-    let max_read = buf.len();
-    let mut bytes_read = 0;
-    while bytes_read < max_read {
-      match self.read(&mut buf[bytes_read..max_read]) {
-        Ok(0) => break,
-        Ok(bytes) => bytes_read += bytes,
-        Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
-        Err(err) => return Err(err),
-      }
-    }
-    Ok(bytes_read)
-  }
-}
-
-impl<T> ReadExt for T where Self: Read {}
-
-macro_rules! read_battery {
-  ($path_opt:expr, $battery:expr) => {{
-    $path_opt.as_ref().map_or(Ok(0usize), |path| {
-      File::open(&path)
-        .and_then(|mut f| f.read_up_to($battery.as_mut()))
-        .map_err(|e| PathError(path.as_ref().into(), e))
-    })
-  }};
-}
+use crate::{
+  convert_params::SrmPaths, retroarch_srm::RetroArchSrm, word_byte_swap, BaseArgs, BatteryType,
+  OutputDir, PathError, ReadExt, Result, SrmFile,
+};
 
 pub(crate) fn create_srm(output_path: SrmFile, args: &BaseArgs, input: SrmPaths) -> Result {
   let mut srm = Box::new(RetroArchSrm::new());
@@ -47,12 +18,16 @@ pub(crate) fn create_srm(output_path: SrmFile, args: &BaseArgs, input: SrmPaths)
       .map_err(|e| PathError(output_path.clone().into(), e))?;
   }
 
-  if let Some(path) = input.get(SaveType::Eeprom) {
-    let len = path.metadata().unwrap().len() as usize;
-    read_battery!(Some(path), srm.eeprom.as_mut()[..len])?;
+  if let Some(battery) = input.battery() {
+    let srm_battery = match battery.battery_type() {
+      BatteryType::Eeprom => srm.eeprom.as_mut(),
+      BatteryType::Sram => srm.sram.as_mut(),
+      BatteryType::FlashRam => srm.flashram.as_mut(),
+    };
+    File::open(battery)
+      .and_then(|mut file| file.read_up_to(srm_battery))
+      .map_err(|err| PathError(battery.clone().into(), err))?;
   }
-  read_battery!(input.get(SaveType::Sram), srm.sram)?;
-  read_battery!(input.get(SaveType::FlashRam), srm.flashram)?;
 
   if args.change_endianness {
     word_byte_swap(srm.sram.as_mut());
@@ -60,7 +35,7 @@ pub(crate) fn create_srm(output_path: SrmFile, args: &BaseArgs, input: SrmPaths)
   }
 
   if args.merge_mempacks {
-    if let Some(cp_path) = input.get(ControllerPackSlot::Mupen) {
+    if let Some(cp_path) = input.mupen_controller_pack() {
       File::open(cp_path)
         .and_then(|mut f| {
           for i in 0..4 {
@@ -68,12 +43,15 @@ pub(crate) fn create_srm(output_path: SrmFile, args: &BaseArgs, input: SrmPaths)
           }
           Ok(())
         })
-        .map_err(|e| PathError(cp_path.clone().into(), e))?;
+        .map_err(|e| PathError(cp_path.to_path_buf(), e))?;
     }
-  } else {
-    use By::*;
-    for (i, cp) in [Player1, Player2, Player3, Player4].into_iter().enumerate() {
-      read_battery!(input.get(cp), srm.controller_pack[i])?;
+  } else if let Some(cps) = input.player_controller_packs() {
+    for (i, cp) in cps.into_iter().enumerate() {
+      if let Some(path) = cp {
+        File::open(path)
+          .and_then(|mut file| file.read_up_to(srm.controller_pack[i].as_mut()))
+          .map_err(|err| PathError(path.to_path_buf(), err))?;
+      }
     }
   }
 
@@ -86,27 +64,4 @@ pub(crate) fn create_srm(output_path: SrmFile, args: &BaseArgs, input: SrmPaths)
     .open(&out_path)
     .and_then(|mut f| f.write_all(srm.as_ref().as_ref()))
     .map_err(|e| PathError(out_path, e))
-}
-
-#[cfg(test)]
-mod tests {
-  use std::io::{Cursor, Read};
-
-  use crate::create_srm::ReadExt;
-
-  #[test]
-  fn test_read_ext() {
-    let data = b"Hello World!";
-
-    let mut buf = [0u8; 15];
-
-    let mut cursor = Cursor::new(data);
-    cursor.read_exact(&mut buf).expect_err("buffer is larger");
-
-    cursor.set_position(0);
-
-    let len = cursor.read_up_to(&mut buf).expect("idk");
-
-    assert_eq!(buf[..len], data[..]);
-  }
 }

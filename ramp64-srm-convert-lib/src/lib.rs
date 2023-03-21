@@ -5,22 +5,29 @@
 
 #![deny(missing_docs)]
 
+mod battery_file;
 mod controller_pack;
+mod controller_pack_file;
 mod convert_params;
 mod create_srm;
 mod game_pack;
 mod retroarch_srm;
-mod save_file;
 mod split_srm;
 mod srm_file;
 
+/// Provides the v2 API
+pub mod v2;
+
 use std::{
-  ffi, fmt, io,
+  ffi::{self},
+  fmt,
+  io::{self, Read, Seek},
   path::{Path, PathBuf},
 };
 
+pub use battery_file::{BatteryFile, BatteryType};
+pub use controller_pack_file::{ControllerPackFile, MupenPackFile, Player};
 pub use convert_params::{convert, ConvertMode, ConvertParams, Problem};
-pub use save_file::{By, ControllerPackSlot, SaveFile, SaveType, User};
 pub use srm_file::SrmFile;
 
 fn word_byte_swap(buf: &mut [u8]) {
@@ -28,6 +35,18 @@ fn word_byte_swap(buf: &mut [u8]) {
     buf.swap(i, i + 3);
     buf.swap(i + 1, i + 2);
   }
+}
+
+fn is_rzip_file<F>(file: &mut F) -> std::io::Result<bool>
+where
+  F: Read + Seek,
+{
+  // (https://github.com/libretro/RetroArch/blob/master/libretro-common/streams/rzip_stream.c)
+
+  let mut magic = [0u8; 8];
+  file.read_up_to(&mut magic)?;
+  file.rewind()?;
+  Ok(&magic == b"#RZIPv1#")
 }
 
 /// Provides the path to which the error originated from
@@ -43,7 +62,7 @@ impl fmt::Display for PathError {
         f.write_fmt(format_args!("could not access {}", path.display()))
       }
       io::ErrorKind::AlreadyExists => {
-        f.write_fmt(format_args!("will overwrite existing {}", path.display()))
+        f.write_fmt(format_args!("will overwrite \"{}\"", path.display()))
       }
       io::ErrorKind::WriteZero => f.write_fmt(format_args!(
         "could not write all data into {}",
@@ -61,6 +80,171 @@ impl fmt::Display for PathError {
 impl std::error::Error for PathError {}
 type Result = std::result::Result<(), PathError>;
 
+#[derive(Debug)]
+enum ConvertibleType {
+  Battery {
+    size: Option<u64>,
+    extension: Option<String>,
+  },
+  ControllerPack {
+    size: Option<u64>,
+  },
+  Srm,
+}
+
+#[derive(Debug)]
+/// Represents a convertible file
+pub struct ConvertibleFile<P>
+where
+  P: AsRef<Path>,
+{
+  part_type: ConvertibleType,
+  path: P,
+}
+
+impl<P> ConvertibleFile<P>
+where
+  P: AsRef<Path>,
+{
+  fn srm(path: P) -> Self {
+    Self {
+      part_type: ConvertibleType::Srm,
+      path,
+    }
+  }
+
+  fn battery(size: Option<u64>, extension: Option<String>, path: P) -> Self {
+    Self {
+      part_type: ConvertibleType::Battery { size, extension },
+      path,
+    }
+  }
+
+  fn controller_pack(size: Option<u64>, path: P) -> Self {
+    Self {
+      part_type: ConvertibleType::ControllerPack { size },
+      path,
+    }
+  }
+}
+
+#[derive(Debug)]
+/// Holds the possible errors when trying to check if a path holds a [ConvertibleFile]
+pub enum CheckConvertibleError {
+  /// The specified new file path did not contain an extension
+  NewFileNoExtension,
+  /// The specified new file path did not have a known extension
+  NewFileUnknownExtension,
+  /// The specified existing path is not a file
+  PathNotAFile,
+  /// The specified existing file cannot be converted
+  NonConvertible,
+  /// An IO error
+  Other(std::io::Error),
+}
+
+impl From<std::io::Error> for CheckConvertibleError {
+  fn from(value: std::io::Error) -> Self {
+    Self::Other(value)
+  }
+}
+
+impl fmt::Display for CheckConvertibleError {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self {
+      Self::NewFileNoExtension => f.write_str("new path without extension"),
+      Self::NewFileUnknownExtension => f.write_str("new path has an unknown extension"),
+      Self::PathNotAFile => f.write_str("existing path is not a file"),
+      Self::NonConvertible => f.write_str("existing file cannot be converted"),
+      Self::Other(err) => err.fmt(f),
+    }
+  }
+}
+
+impl std::error::Error for CheckConvertibleError {}
+
+type ConvertibleResult<P> = std::result::Result<ConvertibleFile<P>, CheckConvertibleError>;
+
+/// Determines if the file is a [ConvertibleFile].
+pub fn try_into_convertible_file<P>(path: P) -> ConvertibleResult<P>
+where
+  P: AsRef<Path>,
+{
+  if !path.as_ref().exists() {
+    match path.as_ref().extension() {
+      Some(ext) => match ext.to_ascii_uppercase().to_str() {
+        Some("SRM") => Ok(ConvertibleFile::srm(path)),
+        ext @ Some("EEP" | "SRA" | "FLA") => {
+          Ok(ConvertibleFile::battery(None, ext.map(String::from), path))
+        }
+        Some("MPK" | "MPK1" | "MPK2" | "MPK3" | "MPK4") => {
+          Ok(ConvertibleFile::controller_pack(None, path))
+        }
+        _ => Err(CheckConvertibleError::NewFileUnknownExtension),
+      },
+      None => Err(CheckConvertibleError::NewFileNoExtension),
+    }
+  } else if path.as_ref().is_file() {
+    read_into_convertible_file(path)
+  } else {
+    Err(CheckConvertibleError::PathNotAFile)
+  }
+}
+
+fn read_into_convertible_file<P>(path: P) -> ConvertibleResult<P>
+where
+  P: AsRef<Path>,
+{
+  // ugh.. now by file size and maybe other stuff
+  let metadata = std::fs::metadata(&path)?;
+  if metadata.len() < 8 {
+    return Ok(ConvertibleFile::battery(
+      Some(metadata.len()),
+      Some("eep".to_string()),
+      path,
+    ));
+  }
+
+  {
+    // for file close
+    let mut file = std::fs::File::open(&path)?;
+    if is_rzip_file(&mut file)? {
+      return Ok(ConvertibleFile::srm(path));
+    }
+    if controller_pack::ControllerPack::infer_from(&mut file)? {
+      return Ok(ConvertibleFile::controller_pack(Some(metadata.len()), path));
+    }
+  }
+
+  match metadata.len() {
+    0x1..=0x20000 => Ok(ConvertibleFile::battery(Some(metadata.len()), None, path)),
+    0x48800 => Ok(ConvertibleFile::srm(path)),
+    _ => Err(CheckConvertibleError::NonConvertible),
+  }
+}
+
+trait ReadExt
+where
+  Self: Read,
+{
+  /// Tries to fill the buffer if there is enough data, otherwise returns all what was read
+  fn read_up_to(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+    let max_read = buf.len();
+    let mut bytes_read = 0;
+    while bytes_read < max_read {
+      match self.read(&mut buf[bytes_read..max_read]) {
+        Ok(0) => break,
+        Ok(bytes) => bytes_read += bytes,
+        Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+        Err(err) => return Err(err),
+      }
+    }
+    Ok(bytes_read)
+  }
+}
+
+impl<T> ReadExt for T where Self: Read {}
+
 /// An error from the construction of a [SaveFile] or [crate::SrmFile] from an existing file
 #[derive(Debug)]
 pub enum CreateError {
@@ -77,7 +261,7 @@ pub enum CreateError {
   /// Only when matching a [SaveFile]: specified file is an [crate::SrmFile]
   IsASrm,
   /// Specified file is not the passed type
-  AnotherType(SaveType),
+  AnotherType(BatteryType),
   /// Only when matching a [crate::SrmFile]: specified file is not of the expected size
   InvalidSize,
   /// An IO error
@@ -257,5 +441,25 @@ mod tests {
         PathBuf::from("/input/data.file")
       );
     }
+  }
+
+  use std::io::{Cursor, Read};
+
+  use crate::ReadExt;
+
+  #[test]
+  fn test_read_ext() {
+    let data = b"Hello World!";
+
+    let mut buf = [0u8; 15];
+
+    let mut cursor = Cursor::new(data);
+    cursor.read_exact(&mut buf).expect_err("buffer is larger");
+
+    cursor.set_position(0);
+
+    let len = cursor.read_up_to(&mut buf).expect("idk");
+
+    assert_eq!(buf[..len], data[..]);
   }
 }

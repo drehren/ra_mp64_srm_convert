@@ -24,4 +24,4 @@ simplelog = "0.12"
 assert_cmd = "2.0.5"
 assert_fs = "1.0.10"
 predicates = "2.1.1"
-zip = { version = "0.6.3", default-features = false, features = ["deflate"] }
+tests_common = { path = "tests_common" }

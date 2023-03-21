@@ -5,7 +5,9 @@ use std::{
   result,
 };
 
-use crate::CreateError;
+use either::Either;
+
+use crate::{ConvertibleFile, ConvertibleType, CreateError};
 
 /// Specifies a typed SRM file
 #[derive(Debug, PartialEq, Clone)]
@@ -46,6 +48,7 @@ impl SrmFile {
       })
   }
 }
+
 impl Deref for SrmFile {
   type Target = Path;
 
@@ -53,16 +56,19 @@ impl Deref for SrmFile {
     &self.0
   }
 }
+
 impl AsRef<Path> for SrmFile {
   fn as_ref(&self) -> &Path {
     &self.0
   }
 }
+
 impl From<SrmFile> for PathBuf {
   fn from(value: SrmFile) -> Self {
     value.0
   }
 }
+
 impl TryFrom<PathBuf> for SrmFile {
   type Error = CreateError;
 
@@ -74,9 +80,29 @@ impl TryFrom<PathBuf> for SrmFile {
     }
   }
 }
+
 impl From<&str> for SrmFile {
   fn from(name: &str) -> Self {
     Self::from_name(name)
+  }
+}
+
+impl<P> ConvertibleFile<P>
+where
+  P: AsRef<Path>,
+{
+  /// Checks if this [ConvertibleFile] is a [SrmFile]
+  pub fn is_srm(&self) -> bool {
+    matches!(self.part_type, ConvertibleType::Srm)
+  }
+
+  /// Gets the [SrmFile] of this value if it can become one
+  pub fn try_into_srm(self) -> Either<SrmFile, Self> {
+    if self.is_srm() {
+      Either::Left(SrmFile(self.path.as_ref().to_path_buf()))
+    } else {
+      Either::Right(self)
+    }
   }
 }
 

@@ -1,26 +1,15 @@
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::{
+  fs::{File, OpenOptions},
+  io::{Read, Write},
+};
 
-use crate::retroarch_srm::RetroArchSrm;
-use crate::save_file::By;
-use crate::{convert_params::SrmPaths, word_byte_swap, BaseArgs, OutputDir, PathError, Result};
-use crate::{ControllerPackSlot, SaveType, SrmFile};
-
-macro_rules! open_write_battery {
-  ($out:expr, $type:expr, $battery:expr, $out_dir:expr, $opts:expr) => {{
-    let path = $out.get($type).as_ref().map_or_else(
-      || $out_dir.base_with_extension($type.extension()),
-      |p| $out_dir.to_out_dir(&p),
-    );
-    $opts
-      .open(&path)
-      .and_then(|mut f| f.write_all($battery.as_ref()))
-      .map_err(|e| PathError(path, e))
-  }};
-}
+use crate::{
+  convert_params::SrmPaths, retroarch_srm::RetroArchSrm, word_byte_swap, BaseArgs, BatteryFile,
+  OutputDir, PathError, Result, SrmFile,
+};
 
 pub(crate) fn split_srm(input_path: SrmFile, args: &BaseArgs, output: SrmPaths) -> Result {
-  use crate::SaveType::*;
+  use crate::BatteryType::*;
 
   let mut srm = Box::new(RetroArchSrm::new());
   File::open(&input_path)
@@ -39,29 +28,42 @@ pub(crate) fn split_srm(input_path: SrmFile, args: &BaseArgs, output: SrmPaths) 
     .create_new(!args.overwrite)
     .write(true);
 
-  if !srm.eeprom.is_empty() {
-    // we need to figure out if this eep is 4k or 16k..
-    if srm.eeprom.as_ref()[512..].iter().all(|b| b == &0xff) {
-      open_write_battery!(output, Eeprom, srm.eeprom.as_mut()[..512], out_dir, opts)?;
+  if let Some(battery) = output.battery().cloned().or_else(|| {
+    if !srm.eeprom.is_empty() {
+      BatteryFile::try_from(out_dir.base_with_extension(Eeprom.extension())).ok()
+    } else if !srm.sram.is_empty() {
+      BatteryFile::try_from(out_dir.base_with_extension(Sram.extension())).ok()
+    } else if !srm.flashram.is_empty() {
+      BatteryFile::try_from(out_dir.base_with_extension(FlashRam.extension())).ok()
     } else {
-      open_write_battery!(output, Eeprom, srm.eeprom, out_dir, opts)?;
+      None
     }
-  }
+  }) {
+    let data = match battery.battery_type() {
+      Eeprom => {
+        // we need to figure out if this eep is 4k or 16k..
+        if srm.eeprom.as_ref()[512..].iter().all(|b| b == &0xff) {
+          &srm.eeprom.as_ref()[..512]
+        } else {
+          srm.eeprom.as_ref()
+        }
+      }
+      Sram => srm.sram.as_ref(),
+      FlashRam => srm.flashram.as_ref(),
+    };
 
-  if !srm.sram.is_empty() {
-    open_write_battery!(output, Sram, srm.sram, out_dir, opts)?;
-  }
-
-  if !srm.flashram.is_empty() {
-    open_write_battery!(output, FlashRam, srm.flashram, out_dir, opts)?;
+    let path = out_dir.to_out_dir(&battery);
+    opts
+      .open(&path)
+      .and_then(|mut file| file.write_all(data))
+      .map_err(|err| PathError(path, err))?;
   }
 
   if args.merge_mempacks {
     if srm.controller_pack.iter().any(|cp| !cp.is_empty()) {
-      use ControllerPackSlot::Mupen;
-      let path = output.get(Mupen).as_ref().map_or_else(
-        || out_dir.base_with_extension(SaveType::from(Mupen).extension()),
-        |p| out_dir.to_out_dir(&p),
+      let path = output.mupen_controller_pack().map_or_else(
+        || out_dir.base_with_extension("mpk"),
+        |p| out_dir.to_out_dir(p),
       );
       opts
         .open(&path)
@@ -73,17 +75,17 @@ pub(crate) fn split_srm(input_path: SrmFile, args: &BaseArgs, output: SrmPaths) 
         })
         .map_err(|e| PathError(path, e))?;
     }
-  } else {
-    use By::*;
-    for (i, cp) in [Player1, Player2, Player3, Player4].into_iter().enumerate() {
+  } else if let Some(cps) = output.player_controller_packs() {
+    for (i, cp) in cps.into_iter().enumerate() {
       if !srm.controller_pack[i].is_empty() {
-        open_write_battery!(
-          output,
-          SaveType::from(cp),
-          srm.controller_pack[i],
-          out_dir,
-          opts
-        )?;
+        let path = cp.as_ref().map_or_else(
+          || out_dir.base_with_extension(&format!("mpk{}", i + 1)),
+          |p| out_dir.to_out_dir(p),
+        );
+        opts
+          .open(&path)
+          .and_then(|mut f| f.write_all(srm.controller_pack[i].as_ref()))
+          .map_err(|e| PathError(path, e))?;
       }
     }
   }

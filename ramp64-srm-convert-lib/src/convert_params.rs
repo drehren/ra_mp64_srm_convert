@@ -1,28 +1,13 @@
-use std::{
-  collections::HashMap,
-  fmt,
-  path::{Path, PathBuf},
-};
+use std::{fmt, path::Path};
 
-use either::Either;
 use log::info;
 
 use crate::{
-  create_srm::create_srm, save_file::User, split_srm::split_srm, BaseArgs, ControllerPackSlot,
-  SaveFile, SaveType, SrmFile,
+  controller_pack_file::{ControllerPackFile, MupenPackFile, Player},
+  create_srm::create_srm,
+  split_srm::split_srm,
+  BaseArgs, BatteryFile, BatteryType, SrmFile,
 };
-
-macro_rules! display_some_path {
-  ($c:expr, $f:expr, $name:expr, $path:expr) => {
-    if let Some(path) = $path {
-      if $c > 0 {
-        $f.write_str(" and ")?;
-      }
-      $f.write_fmt(format_args!("{} ({})", $name, path.display()))?;
-      $c += 1;
-    }
-  };
-}
 
 /// Does the srm file conversion, depending on the given [params](ConvertParams) and [args](BaseArgs).
 ///
@@ -49,13 +34,13 @@ macro_rules! display_some_path {
 /// let mut create_params = ConvertParams::new(ConvertMode::Create, file.clone());
 ///
 /// // Setup an input file
-/// let eep: SaveFile = "file.eep".try_into()?;
+/// let eep: BatteryFile = "file.eep".try_into()?;
 /// // ...
-/// # let eep: SaveFile = tmp_dir.child("file.eep").to_path_buf().try_into()?;
+/// # let eep: BatteryFile = tmp_dir.child("file.eep").to_path_buf().try_into()?;
 /// # std::fs::File::create(&eep).and_then(|mut f| f.write_all(b"101").and_then(|_| f.set_len(512)))?;
 /// assert!(eep.exists());
 ///
-/// create_params.set_or_replace_file(eep);
+/// create_params.change_battery(Some(eep));
 ///
 /// // Apply the conversion
 /// convert(create_params, &args)?;
@@ -116,7 +101,7 @@ impl ConvertParams {
     Self {
       mode,
       file,
-      paths: SrmPaths::default(),
+      paths: SrmPaths::new(),
     }
   }
 
@@ -125,7 +110,7 @@ impl ConvertParams {
     Self {
       mode: ConvertMode::Split,
       file,
-      paths: SrmPaths::default(),
+      paths: SrmPaths::new(),
     }
   }
 
@@ -134,7 +119,7 @@ impl ConvertParams {
     Self {
       mode: ConvertMode::Create,
       file,
-      paths: SrmPaths::default(),
+      paths: SrmPaths::new(),
     }
   }
 
@@ -147,7 +132,7 @@ impl ConvertParams {
   ///
   /// let split_params = ConvertParams::new(ConvertMode::Split, "File.srm".into());
   ///
-  /// assert_eq!(split_params.mode(), &ConvertMode::Split);
+  /// assert_eq!(split_params.mode(), ConvertMode::Split);
   /// ```
   pub fn mode(&self) -> ConvertMode {
     self.mode
@@ -168,7 +153,12 @@ impl ConvertParams {
     &self.file
   }
 
-  /// Gets the [file path](SaveFile) for the given [SaveType]
+  /// Returns the current battery file, if set
+  pub fn battery_file(&self) -> Option<&BatteryFile> {
+    self.paths.battery()
+  }
+
+  /// Gets the [file path](BatteryFile) for the given [BatteryType]
   ///
   /// # Examples
   ///
@@ -177,20 +167,42 @@ impl ConvertParams {
   ///
   /// let params = ConvertParams::new(ConvertMode::Create, "File".into());
   ///
-  /// let eep_file = params.save_file(SaveType::Eeprom);   // Gets the EEPROM file path
-  /// let sra_file = params.save_file(SaveType::Sram);     // Gets the SRAM file path
-  /// let fla_file = params.save_file(SaveType::FlashRam); // Gets the FlashRam file path
-  ///
-  /// let cp1_file = params.save_file(By::Player1); // Gets the first Controller Pack file path
-  /// let cp2_file = params.save_file(By::Player2); // Gets the second Controller Pack file path
-  /// let cp3_file = params.save_file(By::Player3); // Gets the third Controller Pack file path
-  /// let cp4_file = params.save_file(By::Player4); // Gets the fourth Controller Pack file path
-  ///
-  /// let mupen_cp = params.save_file(ControllerPackSlot::Mupen); // Gets the Mupen Controller Pack file path
+  /// let eep_file = params.save_file(BatteryType::Eeprom);   // Gets the EEPROM file path
+  /// let sra_file = params.save_file(BatteryType::Sram);     // Gets the SRAM file path
+  /// let fla_file = params.save_file(BatteryType::FlashRam); // Gets the FlashRam file path
   /// ```
   #[inline]
-  pub fn save_file(&self, save_type: impl Into<SaveType>) -> &Option<SaveFile> {
-    self.paths.get(save_type)
+  pub fn save_file(&self, save_type: impl Into<BatteryType>) -> Option<&Path> {
+    self.paths.battery().and_then(|b| {
+      if b.battery_type() == save_type.into() {
+        Some(b.as_ref())
+      } else {
+        None
+      }
+    })
+  }
+
+  ///
+  pub fn player_pack_file(&self, player: Player) -> Option<&Path> {
+    self
+      .paths
+      .player_controller_packs()
+      .and_then(|packs| packs[player.index()])
+  }
+
+  ///
+  pub fn get_mupen_pack_file(&self) -> Option<&Path> {
+    self.paths.mupen_controller_pack()
+  }
+
+  /// TODO!
+  pub fn set_player_pack(&mut self, pack: ControllerPackFile) -> Option<ReplacedPack> {
+    self.paths.set_controller_pack(pack.into()).into()
+  }
+
+  ///
+  pub fn set_mupen_pack_file(&mut self, mupen_pack: MupenPackFile) -> Option<ReplacedPack> {
+    self.paths.set_controller_pack(mupen_pack.into()).into()
   }
 
   /// Replaces the current [`ConvertMode`] with the given one, returning the old one.
@@ -201,15 +213,15 @@ impl ConvertParams {
   /// use ramp64_srm_convert_lib::{ConvertParams, ConvertMode};
   ///
   /// let mut params = ConvertParams::new(ConvertMode::Split, "File.srm".into());
-  /// assert_eq!(params.mode(), &ConvertMode::Split);
+  /// assert_eq!(params.mode(), ConvertMode::Split);
   ///
   /// // Replace returns the old mode
-  /// assert_eq!(params.replace_mode(ConvertMode::Create), ConvertMode::Split);
+  /// assert_eq!(params.change_mode(ConvertMode::Create), ConvertMode::Split);
   ///
   /// // Check that the replace was effective
-  /// assert_eq!(params.mode(), &ConvertMode::Create);
+  /// assert_eq!(params.mode(), ConvertMode::Create);
   /// ```
-  pub fn replace_mode(&mut self, mode: ConvertMode) -> ConvertMode {
+  pub fn change_mode(&mut self, mode: ConvertMode) -> ConvertMode {
     std::mem::replace(&mut self.mode, mode)
   }
 
@@ -227,23 +239,9 @@ impl ConvertParams {
     std::mem::replace(&mut self.file, srm_file)
   }
 
-  /// Sets or replaces an existing [`SaveFile`] returning the old one, if any.
-  ///
-  /// # Panics
-  ///
-  /// Panics if ```save_file```'s type an [User::Any] controller pack.
-  pub fn set_or_replace_file(&mut self, save_file: SaveFile) -> Option<SaveFile> {
-    self.paths.set(save_file)
-  }
-
-  /// Takes the [`SaveFile`] of the specified [`SaveType`] returning the old one, if any.
-  ///
-  /// # Remarks
-  ///
-  /// If ```save_type``` is an [User::Any] controller pack, this will unset any player controller
-  /// pack
-  pub fn unset_file(&mut self, save_type: SaveType) -> Option<SaveFile> {
-    self.paths.unset(save_type)
+  /// Sets or replaces the [BatteryFile], returning the old one, if any.
+  pub fn change_battery(&mut self, battery_file: Option<BatteryFile>) -> Option<BatteryFile> {
+    self.paths.set_battery(battery_file)
   }
 
   /// Validates the current parameters, returning an existing possible problem
@@ -252,10 +250,9 @@ impl ConvertParams {
       ConvertMode::Create => {
         if self.paths.is_empty() {
           Some(Problem::NoInput)
-        } else if !self.paths.any_is_file() {
-          Some(Problem::FileDoesNotExist(self.paths.get_invalid_paths()))
         } else {
-          None
+          let invalid_paths = self.paths.get_invalid_paths();
+          (!invalid_paths.is_empty()).then_some(Problem::FileDoesNotExist(invalid_paths))
         }
       }
       ConvertMode::Split => {
@@ -291,6 +288,29 @@ impl fmt::Display for ConvertParams {
   }
 }
 
+#[derive(Debug, PartialEq, Clone)]
+pub enum ReplacedPack {
+  Mupen(MupenPackFile),
+  Player(Vec<(Player, ControllerPackFile)>),
+}
+
+impl From<SrmControllerPackPath> for Option<ReplacedPack> {
+  fn from(value: SrmControllerPackPath) -> Self {
+    match value {
+      SrmControllerPackPath::Empty => None,
+      SrmControllerPackPath::Mupen(pack) => pack.map(ReplacedPack::Mupen),
+      SrmControllerPackPath::Player(packs) => {
+        let replaced = packs
+          .into_iter()
+          .enumerate()
+          .filter_map(|(i, p)| p.map(|p| (Player::from(i + 1), p)))
+          .collect::<Vec<_>>();
+        (!replaced.is_empty()).then_some(ReplacedPack::Player(replaced))
+      }
+    }
+  }
+}
+
 /// Specifies the way to convert an SRM file
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
 #[repr(u8)]
@@ -302,143 +322,243 @@ pub enum ConvertMode {
   Split = 1,
 }
 
-#[derive(Debug, PartialEq, Clone, Default)]
+#[derive(Debug, PartialEq, Clone)]
 pub(crate) struct SrmPaths {
-  files: HashMap<SaveType, PathBuf>,
+  battery: Option<BatteryFile>,
+  controller_pack: SrmControllerPackPath,
 }
 
 impl SrmPaths {
+  fn new() -> Self {
+    Self {
+      battery: None,
+      controller_pack: SrmControllerPackPath::Empty,
+    }
+  }
+
   pub(crate) fn is_empty(&self) -> bool {
-    self.files.is_empty()
+    self.battery.is_none() && self.controller_pack.is_empty()
+  }
+
+  pub(crate) fn battery(&self) -> Option<&BatteryFile> {
+    self.battery.as_ref()
+  }
+
+  pub(crate) fn set_battery(&mut self, battery_file: Option<BatteryFile>) -> Option<BatteryFile> {
+    std::mem::replace(&mut self.battery, battery_file)
+  }
+
+  pub(crate) fn set_controller_pack(
+    &mut self,
+    value: SrmControllerPackPath,
+  ) -> SrmControllerPackPath {
+    match (&mut self.controller_pack, value) {
+      (SrmControllerPackPath::Player(cps), SrmControllerPackPath::Player(new_cps)) => {
+        let mut changed = false;
+        let mut replaced = [None, None, None, None];
+        for (i, cp) in new_cps.into_iter().enumerate() {
+          if let Some(cp) = cp {
+            changed = true;
+            replaced[i] = cps[i].replace(cp);
+          }
+        }
+        if changed {
+          SrmControllerPackPath::Player(replaced)
+        } else {
+          SrmControllerPackPath::Empty
+        }
+      }
+      (_, value) => std::mem::replace(&mut self.controller_pack, value),
+    }
+  }
+
+  fn get_paths_vec(&self) -> Vec<Option<&Path>> {
+    match &self.controller_pack {
+      SrmControllerPackPath::Empty => vec![],
+      SrmControllerPackPath::Mupen(cp) => {
+        vec![
+          self.battery.as_ref().map(|f| f.as_ref()),
+          cp.as_ref().map(|p| p.as_ref()),
+        ]
+      }
+      SrmControllerPackPath::Player(cps) => vec![
+        self.battery.as_ref().map(|f| f.as_ref()),
+        cps[0].as_ref().map(|f| f.as_ref()),
+        cps[1].as_ref().map(|f| f.as_ref()),
+        cps[2].as_ref().map(|f| f.as_ref()),
+        cps[3].as_ref().map(|f| f.as_ref()),
+      ],
+    }
+  }
+
+  fn get_typed_vec(&self) -> Vec<Option<(SrmType, &Path)>> {
+    use SrmType::*;
+    match &self.controller_pack {
+      SrmControllerPackPath::Empty => vec![],
+      SrmControllerPackPath::Mupen(cp) => vec![
+        self
+          .battery
+          .as_ref()
+          .map(|f| (f.battery_type().into(), f.as_ref())),
+        cp.as_ref().map(|p| (Mupen, p.as_ref())),
+      ],
+      SrmControllerPackPath::Player(cps) => vec![
+        self
+          .battery
+          .as_ref()
+          .map(|f| (f.battery_type().into(), f.as_ref())),
+        cps[0].as_ref().map(|f| (Cp1, f.as_ref())),
+        cps[1].as_ref().map(|f| (Cp2, f.as_ref())),
+        cps[2].as_ref().map(|f| (Cp3, f.as_ref())),
+        cps[3].as_ref().map(|f| (Cp4, f.as_ref())),
+      ],
+    }
   }
 
   pub(crate) fn any_is_file(&self) -> bool {
-    self.files.values().any(|f| f.is_file())
-  }
-
-  pub(crate) fn set(&mut self, save_file: SaveFile) -> Vec<SaveFile> {
-    let SaveFile { file, save_type } = save_file;
-    if self.files.contains_key(&save_type) {
-      return self
-        .files
-        .insert(save_type, file)
-        .map(|file| vec![SaveFile { file, save_type }])
-        .unwrap_or_default();
-    }
-
-    let mut replaced = Vec::with_capacity(1);
-    if let SaveType::ControllerPack(slot) = save_type {
-      // pre-pack the existing packs... just in case.. 
-      let packs = self
-        .files
-        .keys()
-        .filter(|k| matches!(k, SaveType::ControllerPack(_)))
-        .copied()
-        .collect::<Vec<_>>();
-
-      match slot {
-        ControllerPackSlot::Mupen => {
-          self.files.insert(save_type, file);
-
-          // if there was a Mupen before, the code above replaced it, so..
-          replaced.extend(packs.into_iter().map(|save_type| SaveFile {
-            file: self.files.remove(&save_type).unwrap(),
-            save_type,
-          }));
-        }
-        ControllerPackSlot::Player(User::Any) => {
-          todo!()
-        }
-        ControllerPackSlot::Player(by) => {
-          self.files.insert(save_type, file);
-          if packs.len() == 1 {
-            assert!(
-              packs[0] == ControllerPackSlot::Mupen.into(),
-              "only a Mupen pack can exist here"
-            );
-            replaced.push(SaveFile {
-              file: self.files.remove(&packs[0]).unwrap(),
-              save_type: packs[0],
-            })
-          }
-        }
-      }
-    } else {
-      self.files.insert(save_type, file);
-    }
-    replaced
-  }
-
-  pub(crate) fn unset(&mut self, save_type: SaveType) -> Option<SaveFile> {
-    use ControllerPackSlot::*;
-    match save_type {
-      SaveType::Eeprom => self.eep.take(),
-      SaveType::Sram => self.sra.take(),
-      SaveType::FlashRam => self.fla.take(),
-      SaveType::ControllerPack(Mupen) => self.cp.as_mut().left().map(|f| f.take()).flatten(),
-      SaveType::ControllerPack(Player(User::Any)) => self
-        .cp
-        .as_mut()
-        .right()
-        .map(|cp| {
-          cp.iter_mut()
-            .filter(|p| p.is_some())
-            .take(1)
-            .map(|f| f.take())
-            .last()
-            .flatten()
-        })
-        .flatten(),
-      SaveType::ControllerPack(Player(User::Used(by))) => self
-        .cp
-        .as_mut()
-        .right()
-        .map(|cp| cp[by.index()].take())
-        .flatten(),
-    }
+    self
+      .get_paths_vec()
+      .iter()
+      .any(|p| p.map_or(true, |f| f.is_file()))
   }
 
   pub(crate) fn get_invalid_paths(&self) -> Vec<&Path> {
-    let SrmPaths { eep, fla, sra, cp } = self;
-    let cp = cp.either(|mp| [mp, None, None, None], |cp| cp);
-    [eep, fla, sra, &cp[0], &cp[1], &cp[2], &cp[3]]
+    self
+      .get_paths_vec()
       .iter()
-      .filter_map(|&f| f.as_ref().map(|p| p.as_ref()))
+      .filter_map(|p| p.as_ref().copied())
       .filter(|p| !p.exists())
       .collect::<Vec<_>>()
   }
 
-  pub(crate) fn get(&self, save_type: impl Into<SaveType>) -> Option<&SaveFile> {
-    use ControllerPackSlot::*;
-    match save_type.into() {
-      SaveType::Eeprom => self.eep.as_ref(),
-      SaveType::Sram => self.sra.as_ref(),
-      SaveType::FlashRam => self.fla.as_ref(),
-      SaveType::ControllerPack(Mupen) => self.cp.as_ref().map_left(|f| f.as_ref()).left().flatten(),
-      SaveType::ControllerPack(Player(User::Any)) => {}
-      SaveType::ControllerPack(Player(User::Used(by))) => &self.cp[by.index()],
+  pub(crate) fn mupen_controller_pack(&self) -> Option<&Path> {
+    match &self.controller_pack {
+      SrmControllerPackPath::Mupen(path) => path.as_ref().map(|m| m.as_ref()),
+      _ => None,
+    }
+  }
+
+  pub(crate) fn player_controller_packs(&self) -> Option<[Option<&Path>; 4]> {
+    match &self.controller_pack {
+      SrmControllerPackPath::Empty | SrmControllerPackPath::Mupen(_) => None,
+      SrmControllerPackPath::Player(cps) => Some([
+        cps[0].as_ref().map(|p| p.as_ref()),
+        cps[1].as_ref().map(|p| p.as_ref()),
+        cps[2].as_ref().map(|p| p.as_ref()),
+        cps[3].as_ref().map(|p| p.as_ref()),
+      ]),
     }
   }
 }
 
 impl fmt::Display for SrmPaths {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let mut counter = 0;
-    display_some_path!(counter, f, "EEPROM", &self.eep);
-    display_some_path!(counter, f, "SRAM", &self.sra);
-    display_some_path!(counter, f, "FlashRAM", &self.fla);
-    if !f.alternate() {
-      for i in 1..=4 {
-        display_some_path!(counter, f, format!("Controller Pack {i}"), &self.cp[i - 1]);
+    for (i, path) in self.get_typed_vec().into_iter().enumerate() {
+      if let Some((srm_type, path)) = path {
+        if i > 0 {
+          f.write_str(" and ")?;
+        }
+        f.write_fmt(format_args!("{} ({})", srm_type, path.display()))?;
       }
-    } else if let Some(path) = &self.cp[0] {
-      if counter > 0 {
-        f.write_str(" and ")?;
-      }
-      f.write_fmt(format_args!("Controller Pack ({})", path.display()))?;
     }
-
     Ok(())
+  }
+}
+
+enum SrmType {
+  Eeprom,
+  Sram,
+  FlashRam,
+  Mupen,
+  Cp1,
+  Cp2,
+  Cp3,
+  Cp4,
+}
+
+impl From<BatteryType> for SrmType {
+  fn from(value: BatteryType) -> Self {
+    match value {
+      BatteryType::Eeprom => Self::Eeprom,
+      BatteryType::Sram => Self::Sram,
+      BatteryType::FlashRam => Self::FlashRam,
+    }
+  }
+}
+
+impl fmt::Display for SrmType {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.write_str(match self {
+      Self::Eeprom => "EEPROM",
+      Self::Sram => "SRAM",
+      Self::FlashRam => "FlashRAM",
+      Self::Mupen => "Mupen Controller Pack",
+      Self::Cp1 => "Controller Pack 1",
+      Self::Cp2 => "Controller Pack 2",
+      Self::Cp3 => "Controller Pack 3",
+      Self::Cp4 => "Controller Pack 4",
+    })
+  }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub(crate) enum SrmControllerPackPath {
+  Empty,
+  Mupen(Option<MupenPackFile>),
+  Player([Option<ControllerPackFile>; 4]),
+}
+
+impl SrmControllerPackPath {
+  fn is_empty(&self) -> bool {
+    match self {
+      Self::Empty => true,
+      Self::Mupen(cp) => cp.is_none(),
+      Self::Player(cps) => cps.iter().all(Option::is_none),
+    }
+  }
+}
+
+impl From<[Option<ControllerPackFile>; 4]> for SrmControllerPackPath {
+  fn from(value: [Option<ControllerPackFile>; 4]) -> Self {
+    Self::Player(value)
+  }
+}
+
+impl From<Option<ControllerPackFile>> for SrmControllerPackPath {
+  fn from(value: Option<ControllerPackFile>) -> Self {
+    match value {
+      Some(pack) => match pack.player() {
+        Some(Player::P1) => SrmControllerPackPath::Player([Some(pack), None, None, None]),
+        Some(Player::P2) => SrmControllerPackPath::Player([None, Some(pack), None, None]),
+        Some(Player::P3) => SrmControllerPackPath::Player([None, None, Some(pack), None]),
+        Some(Player::P4) => SrmControllerPackPath::Player([None, None, None, Some(pack)]),
+        None => SrmControllerPackPath::Player([Some(pack), None, None, None]),
+      },
+      None => SrmControllerPackPath::Player([None, None, None, None]),
+    }
+  }
+}
+
+impl From<ControllerPackFile> for SrmControllerPackPath {
+  fn from(pack: ControllerPackFile) -> Self {
+    let mut cps = [None, None, None, None];
+    match pack.player() {
+      Some(player) => cps[player.index()] = Some(pack),
+      None => cps[0] = Some(pack),
+    }
+    Self::Player(cps)
+  }
+}
+
+impl From<Option<MupenPackFile>> for SrmControllerPackPath {
+  fn from(value: Option<MupenPackFile>) -> Self {
+    Self::Mupen(value)
+  }
+}
+
+impl From<MupenPackFile> for SrmControllerPackPath {
+  fn from(value: MupenPackFile) -> Self {
+    Self::Mupen(Some(value))
   }
 }
 
@@ -455,51 +575,13 @@ pub enum Problem<'g> {
 
 #[cfg(test)]
 pub(super) mod tests {
-  use crate::{save_file::By, SaveType};
+  use crate::BatteryType;
 
   use super::*;
 
-  pub(crate) type SaveFlag = u8;
-  pub(crate) trait SaveFlagExt {
-    const EEP: SaveFlag = 0x1;
-    const FLA: SaveFlag = 0x2;
-    const SRA: SaveFlag = 0x4;
-    const CP1: SaveFlag = 0x08;
-    const CP2: SaveFlag = 0x10;
-    const CP3: SaveFlag = 0x20;
-    const CP4: SaveFlag = 0x40;
-    const CP: SaveFlag = Self::CP1 | Self::CP2 | Self::CP3 | Self::CP4;
-    const ALL: SaveFlag = Self::EEP | Self::FLA | Self::SRA | Self::CP;
-  }
-  impl SaveFlagExt for SaveFlag {}
-
-  fn check_paths(paths: &SrmPaths, save_flags: SaveFlag) {
-    if save_flags & SaveFlag::CP1 == SaveFlag::CP1 {
-      assert_eq!(paths.cp[0], None);
-    }
-    if save_flags & SaveFlag::CP2 == SaveFlag::CP2 {
-      assert_eq!(paths.cp[1], None);
-    }
-    if save_flags & SaveFlag::CP3 == SaveFlag::CP3 {
-      assert_eq!(paths.cp[2], None);
-    }
-    if save_flags & SaveFlag::CP4 == SaveFlag::CP4 {
-      assert_eq!(paths.cp[3], None);
-    }
-    if save_flags & SaveFlag::EEP == SaveFlag::EEP {
-      assert_eq!(paths.eep, None);
-    }
-    if save_flags & SaveFlag::SRA == SaveFlag::SRA {
-      assert_eq!(paths.sra, None);
-    }
-    if save_flags & SaveFlag::FLA == SaveFlag::FLA {
-      assert_eq!(paths.fla, None);
-    }
-  }
-
   #[test]
   fn verify_srm_paths() {
-    let paths = SrmPaths::default();
+    let paths = SrmPaths::new();
 
     assert!(paths.is_empty());
     assert!(!paths.any_is_file());
@@ -508,36 +590,66 @@ pub(super) mod tests {
 
   #[test]
   fn verify_srm_paths_set_mpk() {
-    let mut paths = SrmPaths::default();
+    let mut paths = SrmPaths::new();
 
-    let mpk: SaveFile = "A.mpk".try_into().expect("Save name is valid");
-    assert_eq!(paths.set(mpk.clone()), None);
+    let cp: ControllerPackFile = "A.mpk".into();
+    assert_eq!(
+      paths.set_controller_pack(cp.clone().into()),
+      SrmControllerPackPath::Empty
+    );
+    assert!(!matches!(
+      paths.controller_pack,
+      SrmControllerPackPath::Mupen(_)
+    ));
 
     assert!(!paths.is_empty());
-    check_paths(&paths, SaveFlag::ALL & !SaveFlag::CP1);
+    assert_eq!(
+      paths.controller_pack,
+      SrmControllerPackPath::Player([Some("A.mpk".into()), None, None, None])
+    );
 
     // test replace mkp1
-    let mpk1: SaveFile = "B.mpk1".try_into().expect("Save name is valid");
-    assert_eq!(paths.set(mpk1.clone()), Some(mpk));
+    let cp1: ControllerPackFile = "B.mpk1".into();
+    assert_eq!(
+      paths.set_controller_pack(cp1.clone().into()),
+      SrmControllerPackPath::Player([Some(cp), None, None, None])
+    );
 
     assert!(!paths.is_empty());
-    check_paths(&paths, SaveFlag::ALL & !SaveFlag::CP1);
+    assert_eq!(
+      paths.controller_pack,
+      SrmControllerPackPath::Player([Some("B.mpk1".into()), None, None, None])
+    );
 
     // test add mpk3
-    let mpk3: SaveFile = "X.mpk3".try_into().expect("Save name is valid");
-    assert_eq!(paths.set(mpk3.clone()), None);
+    let cp3: ControllerPackFile = "X.mpk3".into();
+    assert_eq!(
+      paths.set_controller_pack(cp3.clone().into()),
+      SrmControllerPackPath::Player([None, None, None, None])
+    );
 
     assert!(!paths.is_empty());
-    check_paths(&paths, SaveFlag::ALL & !SaveFlag::CP1 & !SaveFlag::CP3);
+    assert_eq!(
+      paths.controller_pack,
+      SrmControllerPackPath::Player([Some("B.mpk1".into()), None, Some("X.mpk3".into()), None])
+    );
 
     // test replace with mupen mpk
-    let mpk = SaveFile::try_new("M.mpk4", ControllerPackSlot::Mupen.into())
-      .expect("Controller pack naming is valid");
-
-    assert_eq!(paths.set(mpk), Some(mpk1));
+    let mpk: MupenPackFile = "M.mpk4".into();
+    assert_eq!(
+      paths.set_controller_pack(mpk.clone().into()),
+      SrmControllerPackPath::Player([Some("B.mpk1".into()), None, Some("X.mpk3".into()), None])
+    );
 
     assert!(!paths.is_empty());
-    check_paths(&paths, SaveFlag::ALL & !SaveFlag::CP1);
+    assert!(matches!(
+      paths.controller_pack,
+      SrmControllerPackPath::Mupen(_)
+    ));
+    assert_eq!(
+      paths.controller_pack,
+      SrmControllerPackPath::Mupen(Some("M.mpk4".into()))
+    )
   }
 
   #[test]
@@ -546,7 +658,7 @@ pub(super) mod tests {
 
     assert_eq!(params.mode, ConvertMode::Create);
     assert_eq!(params.file, "file".into());
-    assert_eq!(params.paths, SrmPaths::default());
+    assert_eq!(params.paths, SrmPaths::new());
   }
 
   #[test]
@@ -555,15 +667,21 @@ pub(super) mod tests {
 
     assert!(params.paths.is_empty());
 
-    let eep: SaveFile = "save.eep".try_into().expect("Save name is ok");
-    assert_eq!(params.set_or_replace_file(eep.clone()), None);
-    assert_eq!(params.save_file(SaveType::Eeprom), &Some(eep.clone()));
+    let eep: BatteryFile = "save.eep".try_into().expect("Save name is ok");
+    assert_eq!(params.change_battery(Some(eep.clone())), None);
+    assert_eq!(
+      params.save_file(BatteryType::Eeprom),
+      Some(Path::new("save.eep"))
+    );
 
     assert!(!params.paths.is_empty());
 
-    let eep_new: SaveFile = "sav2.eep".try_into().expect("Save name is ok");
-    assert_eq!(params.set_or_replace_file(eep_new.clone()), Some(eep));
-    assert_eq!(params.save_file(SaveType::Eeprom), &Some(eep_new));
+    let eep_new: BatteryFile = "sav2.eep".try_into().expect("Save name is ok");
+    assert_eq!(params.change_battery(Some(eep_new.clone())), Some(eep));
+    assert_eq!(
+      params.save_file(BatteryType::Eeprom),
+      Some(Path::new("sav2.eep"))
+    );
 
     assert!(!params.paths.is_empty());
   }
@@ -574,15 +692,21 @@ pub(super) mod tests {
 
     assert!(params.paths.is_empty());
 
-    let sra: SaveFile = "save.sra".try_into().expect("Save name is ok");
-    assert_eq!(params.set_or_replace_file(sra.clone()), None);
-    assert_eq!(params.save_file(SaveType::Sram), &Some(sra.clone()));
+    let sra: BatteryFile = "save.sra".try_into().expect("Save name is ok");
+    assert_eq!(params.change_battery(Some(sra.clone())), None);
+    assert_eq!(
+      params.save_file(BatteryType::Sram),
+      Some(Path::new("save.sra"))
+    );
 
     assert!(!params.paths.is_empty());
 
-    let sra_new: SaveFile = "sav2.sra".try_into().expect("Save name is ok");
-    assert_eq!(params.set_or_replace_file(sra_new.clone()), Some(sra));
-    assert_eq!(params.save_file(SaveType::Sram), &Some(sra_new));
+    let sra_new: BatteryFile = "sav2.sra".try_into().expect("Save name is ok");
+    assert_eq!(params.change_battery(Some(sra_new.clone())), Some(sra));
+    assert_eq!(
+      params.save_file(BatteryType::Sram),
+      Some(Path::new("sav2.sra"))
+    );
 
     assert!(!params.paths.is_empty());
   }
@@ -593,53 +717,63 @@ pub(super) mod tests {
 
     assert!(params.paths.is_empty());
 
-    let fla: SaveFile = "save.fla".try_into().expect("Save name is ok");
-    assert_eq!(params.set_or_replace_file(fla.clone()), None);
-    assert_eq!(params.save_file(SaveType::FlashRam), &Some(fla.clone()));
+    let fla: BatteryFile = "save.fla".try_into().expect("Save name is ok");
+    assert_eq!(params.change_battery(Some(fla.clone())), None);
+    assert_eq!(
+      params.save_file(BatteryType::FlashRam),
+      Some(Path::new("save.fla"))
+    );
 
     assert!(!params.paths.is_empty());
 
-    let fla_new: SaveFile = "sav2.fla".try_into().expect("Save name is ok");
-    assert_eq!(params.set_or_replace_file(fla_new.clone()), Some(fla));
-    assert_eq!(params.save_file(SaveType::FlashRam), &Some(fla_new));
+    let fla_new: BatteryFile = "sav2.fla".try_into().expect("Save name is ok");
+    assert_eq!(params.change_battery(Some(fla_new.clone())), Some(fla));
+    assert_eq!(
+      params.save_file(BatteryType::FlashRam),
+      Some(Path::new("sav2.fla"))
+    );
 
     assert!(!params.paths.is_empty());
   }
 
   #[test]
   fn verify_convert_params_set_mpk() {
-    use By::*;
-    use ControllerPackSlot::*;
+    use Player::*;
 
     let mut params = ConvertParams::new(ConvertMode::Create, "file.srm".into());
 
     assert!(params.paths.is_empty());
 
-    let cp: SaveFile = "save.mpk1".try_into().expect("Save name is ok");
-    assert_eq!(params.set_or_replace_file(cp.clone()), None);
-    assert_eq!(params.save_file(Player1), &Some(cp.clone()));
+    let cp1: ControllerPackFile = "save.mpk1".into();
+    assert_eq!(params.set_player_pack(cp1.clone()), None);
+    assert_eq!(params.player_pack_file(P1), Some(Path::new("save.mpk1")));
 
     assert!(!params.paths.is_empty());
 
-    let cp_new: SaveFile = "save.mpk2".try_into().expect("Save name is ok");
-    assert_eq!(params.set_or_replace_file(cp_new.clone()), None);
-    assert_eq!(params.save_file(Player2), &Some(cp_new));
+    let cp2: ControllerPackFile = "save.mpk2".into();
+    assert_eq!(params.set_player_pack(cp2.clone()), None);
+    assert_eq!(params.player_pack_file(P2), Some(Path::new("save.mpk2")));
 
-    let cp_new: SaveFile = "save.mpk3".try_into().expect("Save name is ok");
-    assert_eq!(params.set_or_replace_file(cp_new.clone()), None);
-    assert_eq!(params.save_file(Player3), &Some(cp_new));
+    let cp3: ControllerPackFile = "save.mpk3".try_into().expect("Save name is ok");
+    assert_eq!(params.set_player_pack(cp3.clone()), None);
+    assert_eq!(params.player_pack_file(P3), Some(Path::new("save.mpk3")));
 
-    let cp_new: SaveFile = "save.mpk4".try_into().expect("Save name is ok");
-    assert_eq!(params.set_or_replace_file(cp_new.clone()), None);
-    assert_eq!(params.save_file(Player4), &Some(cp_new));
+    let cp4: ControllerPackFile = "save.mpk4".try_into().expect("Save name is ok");
+    assert_eq!(params.set_player_pack(cp4.clone()), None);
+    assert_eq!(params.player_pack_file(P4), Some(Path::new("save.mpk4")));
 
     // test replace by mupen
-    let cp_new =
-      SaveFile::try_new("save.mpk", ControllerPackSlot::Mupen.into()).expect("Save name is ok");
-    assert_eq!(params.set_or_replace_file(cp_new.clone()), Some(cp));
-    assert_eq!(params.save_file(Mupen), &Some(cp_new));
-
-    check_paths(&params.paths, SaveFlag::ALL & !SaveFlag::CP1);
+    let cp_new: MupenPackFile = "save.mpk".into();
+    assert_eq!(
+      params.set_mupen_pack_file(cp_new.clone()),
+      Some(ReplacedPack::Player(vec![
+        (P1, cp1),
+        (P2, cp2),
+        (P3, cp3),
+        (P4, cp4)
+      ]))
+    );
+    assert_eq!(params.get_mupen_pack_file(), Some(Path::new("save.mpk")));
   }
 
   #[test]
@@ -650,16 +784,16 @@ pub(super) mod tests {
     assert_eq!(params.file, "file".into());
     assert!(params.paths.is_empty());
 
-    assert_eq!(params.replace_mode(ConvertMode::Split), ConvertMode::Create);
+    assert_eq!(params.change_mode(ConvertMode::Split), ConvertMode::Create);
     assert_eq!(params.replace_srm_file("new".into()), "file".into());
     assert!(params.paths.is_empty());
 
-    let eep: SaveFile = "save.eep".try_into().expect("File name is ok");
-    params.set_or_replace_file(eep.clone());
+    let eep: BatteryFile = "save.eep".try_into().expect("File name is ok");
+    params.change_battery(Some(eep.clone()));
 
     assert!(!params.paths.is_empty());
 
-    assert_eq!(params.unset_file(SaveType::Eeprom), Some(eep));
+    assert_eq!(params.change_battery(None), Some(eep));
 
     assert!(params.paths.is_empty());
   }
@@ -673,7 +807,7 @@ pub(super) mod tests {
       Some(Problem::FileDoesNotExist(vec![Path::new("file.srm")]))
     );
 
-    params.replace_mode(ConvertMode::Create);
+    params.change_mode(ConvertMode::Create);
 
     assert_eq!(params.validate(), Some(Problem::NoInput));
   }
