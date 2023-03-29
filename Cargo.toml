@@ -1,8 +1,8 @@
 [package]
 name = "ra_mp64_srm_convert"
 description = "A simple application to convert to and from Retroarch Mupen64 save file."
-exclude = [".github./*", "tests/*"]
-version = "0.13.0"
+include = ["src/main.rs", "Cargo.toml", "LICENSE", "README.md"]
+version = "1.0.0"
 authors = ["Daniel Rehren <daniel.rehren.a@gmail.com>"]
 edition = "2021"
 readme = "README.md"
@@ -15,13 +15,13 @@ categories = ["command-line-utilities"]
 [workspace]
 
 [dependencies]
-clap = { version = "4.1", features = ["derive"] }
+clap = { version = "4.2", features = ["derive"] }
 log = "0.4"
-ramp64-srm-convert-lib = { path = "ramp64-srm-convert-lib", version = "0.3" }
+ramp64-srm-convert-lib = { path = "ramp64-srm-convert-lib", version = "0.4" }
 simplelog = "0.12"
 
 [dev-dependencies]
-assert_cmd = "2.0.5"
-assert_fs = "1.0.10"
-predicates = "2.1.1"
+assert_cmd = "2.0"
+assert_fs = "1.0"
+predicates = "3.0"
 tests_common = { path = "tests_common" }

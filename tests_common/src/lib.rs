@@ -1,12 +1,10 @@
 use assert_cmd::{assert::Assert, Command};
 use assert_fs::{fixture::ChildPath, prelude::*, TempDir};
 use predicates::prelude::*;
-use std::{
-  error::Error,
-  fmt::Display,
-  io::Cursor,
-  path::{Path, PathBuf},
-};
+use std::error::Error;
+use std::fmt::Display;
+use std::io::Cursor;
+use std::path::{Path, PathBuf};
 use zip::ZipArchive;
 
 pub type TestResult<T> = Result<T, Box<dyn Error>>;
@@ -66,24 +64,24 @@ impl SaveType {
       },
       SaveType::MupenControllerPack => "mpk",
       SaveType::ControllerPack(n) => match n {
-        &Player::P1 => "mpk1",
-        &Player::P2 => "mpk2",
-        &Player::P3 => "mpk3",
-        &Player::P4 => "mpk4",
+        Player::P1 => "mpk1",
+        Player::P2 => "mpk2",
+        Player::P3 => "mpk3",
+        Player::P4 => "mpk4",
       },
       SaveType::Eeprom(size) => match size {
-        &EepromSize::_16Kbit => "eep_16k",
-        &EepromSize::_4Kbit => "eep_4k",
+        EepromSize::_16Kbit => "eep_16k",
+        EepromSize::_4Kbit => "eep_4k",
       },
       SaveType::Srm => "srm",
     }
   }
 
   pub fn is_big_endian(&self) -> bool {
-    match self {
-      Self::FlashRam(Endianness::Big) | Self::Sram(Endianness::Big) => true,
-      _ => false,
-    }
+    matches!(
+      self,
+      Self::FlashRam(Endianness::Big) | Self::Sram(Endianness::Big)
+    )
   }
 }
 impl Display for SaveType {
@@ -93,7 +91,7 @@ impl Display for SaveType {
 }
 impl AsRef<Path> for SaveType {
   fn as_ref(&self) -> &Path {
-    &Path::new(match self {
+    Path::new(match self {
       SaveType::FlashRam(endianness) => match endianness {
         Endianness::Big => "fla/be",
         Endianness::Little => "fla/le",
@@ -145,11 +143,9 @@ impl DataPrepare {
     let mut result = Vec::with_capacity(2);
 
     let dir_read = save_path.read_dir()?;
-    for entry in dir_read {
-      if let Ok(entry) = entry {
-        if entry.file_type()?.is_file() {
-          result.push(entry.path())
-        }
+    for entry in dir_read.flatten() {
+      if entry.file_type()?.is_file() {
+        result.push(entry.path())
       }
     }
 

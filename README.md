@@ -1,8 +1,8 @@
 # RetroArch N64 Save Converter
 
-A simple converter for Retroarch's Mupen64Plus core save files; from eep, mpk, sra or fla to srm (or viceversa).
+A simple converter for Retroarch's Mupen64Plus core save files; from eep, mpk*, sra or fla to srm (or viceversa).
 
-When a SRM file is split into its contents, only those with data will be exported.
+When a SRM file is split into its contents, only those contents with data will be created.
 
 ## Usage TL;DR
 
@@ -12,10 +12,13 @@ $ ra_mp64_srm_convert A.srm B.mpk B.eep C.fla C.srm D.srm D.fla F.mpk1 F.mpk3
 ```
 
 Output:
-- A.eep, A.sra or A.fla, and/or A.mpk1 A.mpk2 A.mpk3 A.mpk4 (all new)
+- A.eep, A.sra or A.fla, and/or A.mpk1, A.mpk2, A.mpk3, A.mpk4 (all new)
 - B.srm (new)
-- C.srm (updated)
-- D.eep (updated) D.sra D.fla D.mpk1 D.mpk2 D.mpk3 D.mpk4 (all new)
+- C.srm (updated if exists and `--overwrite` is set)
+- D.eep (overwritten if `--overwrite`), D.sra and/or D.fla; D.mpk1 D.mpk2 D.mpk3 D.mpk4 (all new)
+- F.srm (new)
+
+Note: This program will only overwrite existing files if `--overwrite` is given.
 
 ### Create a SRM
 
@@ -56,7 +59,7 @@ $ ra_mp64_srm_convert -s B.mpk B.eep C.fla F.mpk3 A.srm
 ```
 
 Output:
-- B.eep C.sra C.fla B.mpk C.mpk2 F.mpk3 C.mpk4
+- A.eep A.sra A.fla A.mpk1 A.mpk2 A.mpk3 A.mpk4
 
 ## Usage
 
@@ -109,7 +112,7 @@ For example
 ```sh
 $ ra_mp64_srm_convert -c A.srm B.mpk B.eep C.fla C.srm D.srm D.fla F.mpk1 F.mpk3
 ```
-will create an SRM at D.srm using B.eep, D.fla, F.mpk1, F.mpk3
+will create a SRM at D.srm using B.eep, D.fla, F.mpk1, F.mpk3
 
 
 #### Split
@@ -151,27 +154,28 @@ will split D.srm into D.sra, B.eep, D.fla, F.mpk1, D.mpk2, F.mpk3 and/or D.mpk4
 ~~~~~~~
 A simple converter for Retroarch's Mupen64Plus core save files
 
-Usage: ra_mp64_srm_convert.exe [OPTIONS] <FILE>...
+Usage: ra_mp64_srm_convert.exe [OPTIONS] [FILE]...
 
 Arguments:
-  <FILE>...  The input file(s)
+  [FILE]...  The input file(s)
 
 Options:
   -v, --verbosity <VERBOSITY>    Sets the output verbosity [default: normal] [possible values: quiet, normal, debug]
   -c, --create-srm               Forces the creation of a SRM file from all the given files
   -s, --split-srm                Forces the split of an existing SRM to all the given files
-      --overwrite                If set, the program will overwrite any existing files
-      --change-endianness        Is set, any FlashRAM or SRAM data will swap its endianness
-      --merge-mempacks           If set, the 4 memory pack files will be merged into one
-      --output-dir <OUTPUT_DIR>  Sets the output directory for the created file (or files)
-  -h, --help                     Print help information
-  -V, --version                  Print version information
+  -m, --merge-mempacks           When splitting a SRM, merge all controller packs in one file
+      --overwrite                If set, any existing file will be overwritten
+  -o, --output-dir <OUTPUT_DIR>  Sets the output directory
+      --change-endianness        If set, EEP and FlashRAM bytes will be swapped
+  -i, --input-dir <INPUT_DIR>    Use this flag to convert files from directory
+  -h, --help                     Print help
+  -V, --version                  Print version
 ~~~~~~~
 
 ## Building
 
 Requirements:
-* rust >= 1.66
+* rust >= 1.68
 
 Simply use ```cargo``` to build:
 
