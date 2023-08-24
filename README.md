@@ -1,6 +1,6 @@
 # RetroArch N64 Save Converter
 
-A simple converter for Retroarch's Mupen64Plus core save files; from eep, mpk*, sra or fla to srm (or viceversa).
+A simple converter for Retroarch's Mupen64Plus core (uncompressed) save files; from eep, mpk*, sra or fla to srm (or viceversa).
 
 When a SRM file is split into its contents, only those contents with data will be created.
 
@@ -140,14 +140,15 @@ will split D.srm into D.sra, B.eep, D.fla, F.mpk1, D.mpk2, F.mpk3 and/or D.mpk4
 
 ### Type extension size table:
 
-| Save type | Extension(s)          | Size(s)        |
-|-----------|-----------------------|----------------|
-| EEPROM    | *.eep                 | 512   B, 2 KiB |
-| SRAM      | *.sra                 |  32 KiB        |
-| FlashRAM  | *.fla                 | 128 KiB        |
-| Mempack   | *.mpk, *.mpk(1,2,3,4) |  32 KiB        |
+| Save type       | Extension(s)          | Size(s)        |
+|-----------------|-----------------------|----------------|
+| N64 - EEPROM    | *.eep                 | 512   B, 2 KiB |
+| N64 - SRAM      | *.sra                 |  32 KiB        |
+| N64 - FlashRAM  | *.fla                 | 128 KiB        |
+| N64 - Mempack   | *.mpk, *.mpk(1,2,3,4) |  32 KiB        |
+| RA  - SRM       | *.srm                 | 290 KiB        |
 
-[Size source](http://micro-64.com/database/gamesave.shtml)
+[N64 Save types size source](http://micro-64.com/database/gamesave.shtml)
 
 ## Help
 
