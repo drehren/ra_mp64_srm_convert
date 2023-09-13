@@ -4,6 +4,8 @@ A simple converter for Retroarch's Mupen64Plus core (uncompressed) save files; f
 
 When a SRM file is split into its contents, only those contents with data will be created.
 
+This is a console application. For a graphical one see [ramp64-convert-gui](https://github.com/drehren/ramp64-convert-gui), for a web-based one see [ramp64-convert-web](https://github.com/drehren/ramp64-convert-web).
+
 ## Usage TL;DR
 
 ### Group by filename (default)
