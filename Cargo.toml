@@ -2,7 +2,7 @@
 name = "ra_mp64_srm_convert"
 description = "A simple application to convert to and from Retroarch Mupen64 save file."
 include = ["src/main.rs", "Cargo.toml", "LICENSE", "README.md"]
-version = "1.0.0"
+version = "1.1.0"
 authors = ["Daniel Rehren <daniel.rehren.a@gmail.com>"]
 edition = "2021"
 readme = "README.md"
