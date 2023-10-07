@@ -211,7 +211,7 @@ enum AutoParams {
 
 impl AutoParams {
   fn is_create(&self) -> bool {
-    matches!(self, Self::Split(_))
+    matches!(self, Self::Create(_))
   }
 }
 
@@ -362,6 +362,11 @@ fn add_to_split_params(path: PathBuf, params: &mut split::Params) {
 }
 
 fn process_groups(mut params: BTreeMap<String, AutoParams>, user_params: UserParams) -> ExitCode {
+  if params.is_empty() {
+    error!("No groups to process");
+    return ExitCode::FAILURE;
+  }
+
   debug!("----- Validating groups -----");
 
   // validate parameters
