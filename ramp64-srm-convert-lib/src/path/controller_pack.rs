@@ -63,7 +63,7 @@ impl ControllerPackPaths {
     matches!(self.0, Kind::Mupen(_))
   }
 
-  /// Gets the paths from this [ControllerPackPaths]
+  /// Gets the paths from this [`ControllerPackPaths`]
   pub fn into_indexed_paths(self) -> Vec<(usize, std::path::PathBuf)> {
     match self.0 {
       Kind::Mupen(mp) => vec![(0, mp)],
@@ -74,6 +74,14 @@ impl ControllerPackPaths {
         .collect::<Vec<_>>(),
     }
   }
+
+  /// Gets the path of the pack that initialized this [`ControllerPackPaths`]
+  pub fn first_path(&self) -> &std::path::Path {
+    match &self.0 {
+      Kind::Mupen(mp) => mp,
+      Kind::ControllerPack { first, packs } => packs[*first].as_ref().unwrap(),
+    }
+  }
 }
 
 impl std::fmt::Display for ControllerPackPaths {
@@ -82,23 +90,6 @@ impl std::fmt::Display for ControllerPackPaths {
       Kind::Mupen(_) => f.write_str("Mupen Controller Pack"),
       Kind::ControllerPack { .. } => f.write_str("Controller Pack"),
     }
-  }
-}
-
-impl std::ops::Deref for ControllerPackPaths {
-  type Target = std::path::Path;
-
-  fn deref(&self) -> &Self::Target {
-    match &self.0 {
-      Kind::Mupen(mp) => mp,
-      Kind::ControllerPack { first, packs } => packs[*first].as_ref().unwrap(),
-    }
-  }
-}
-
-impl AsRef<std::path::Path> for ControllerPackPaths {
-  fn as_ref(&self) -> &std::path::Path {
-    <Self as std::ops::Deref>::deref(self)
   }
 }
 

@@ -180,7 +180,7 @@ impl Converter for Params {
 
     let mut no_battery = true;
     if let Some(battery) = &self.battery {
-      if battery.exists() {
+      if battery.path().exists() {
         validation += battery
           .validate_type()
           .map(|_| Validation::Ok)
@@ -190,7 +190,7 @@ impl Converter for Params {
     }
     let mut no_cp = true;
     if let Some(cp) = &self.controller_pack {
-      if cp.exists() {
+      if cp.first_path().exists() {
         no_cp = false;
         validation += if cp.is_valid_size() {
           Validation::Ok
@@ -219,12 +219,17 @@ impl Converter for Params {
       name,
     } = self;
 
-    let mut srm_data = super::SrmBuf::new();
+    let mut srm_buf = super::SrmBuf::new();
 
     let out_path = {
       let main_path = battery_file
-        .as_deref()
-        .or(controller_pack.as_deref())
+        .as_ref()
+        .map(BatteryPath::path)
+        .or(
+          controller_pack
+            .as_ref()
+            .map(ControllerPackPaths::first_path),
+        )
         .unwrap()
         .to_owned();
 
@@ -240,28 +245,28 @@ impl Converter for Params {
 
     if out_path.is_file() {
       // ignore any error here... we only do as best effort
-      let _ = std::fs::File::open(&out_path).and_then(|mut file| file.read_up_to(&mut srm_data));
+      let _ = std::fs::File::open(&out_path).and_then(|mut file| file.read_up_to(srm_buf.as_mut()));
     }
 
     if let Some(battery_save) = battery_file {
       let data_buf = match battery_save.battery_type() {
-        BatteryType::Eeprom => srm_data.eeprom_mut(),
-        BatteryType::Sram => srm_data.sram_mut(),
-        BatteryType::FlashRam => srm_data.flashram_mut(),
+        BatteryType::Eeprom => srm_buf.eeprom_mut(),
+        BatteryType::Sram => srm_buf.sram_mut(),
+        BatteryType::FlashRam => srm_buf.flashram_mut(),
       };
 
-      std::fs::File::open(&battery_save)
+      std::fs::File::open(battery_save.path())
         .and_then(|mut file| file.read_up_to(data_buf))
         .map_err(|e| super::Error(battery_save.into(), e))?;
     }
 
     if let Some(controller_pack) = controller_pack {
       if controller_pack.is_mupen() {
-        std::fs::File::open(&controller_pack)
-          .and_then(|mut file| file.read_up_to(srm_data.full_controller_pack_mut()))
+        std::fs::File::open(controller_pack.first_path())
+          .and_then(|mut file| file.read_up_to(srm_buf.full_controller_pack_mut()))
           .map_err(|e| super::Error(controller_pack.into(), e))?;
       } else {
-        let mut packs = srm_data.controller_pack_iter_mut().collect::<Vec<_>>();
+        let mut packs = srm_buf.controller_pack_iter_mut().collect::<Vec<_>>();
         for (i, path) in controller_pack.into_indexed_paths() {
           std::fs::File::open(&path)
             .and_then(|mut file| file.read_up_to(packs[i]))
@@ -271,8 +276,8 @@ impl Converter for Params {
     }
 
     if user_params.swap_bytes {
-      word_swap(srm_data.eeprom_mut());
-      word_swap(srm_data.flashram_mut());
+      word_swap(srm_buf.eeprom_mut());
+      word_swap(srm_buf.flashram_mut());
     }
 
     std::fs::OpenOptions::new()
@@ -280,7 +285,7 @@ impl Converter for Params {
       .create_new(!user_params.overwrite)
       .write(true)
       .open(&out_path)
-      .and_then(|mut file| file.write_all(&srm_data))
+      .and_then(|mut file| file.write_all(srm_buf.as_ref()))
       .map_err(|e| super::Error(out_path, e))
   }
 }
@@ -326,7 +331,7 @@ mod tests {
     let sra = to_battery(bad_sra_path).expect("New path always OK");
 
     // now make it bad
-    std::fs::File::create(&sra).and_then(|f| f.set_len(0x20012))?;
+    std::fs::File::create(sra.path()).and_then(|f| f.set_len(0x20012))?;
 
     let params = Params::default().set_battery(sra);
     assert!(matches!(

@@ -314,24 +314,27 @@ fn automatic_from_files(user_params: UserParams, args: RaMp64ConvertArgs) -> Exi
 fn add_to_create_params(path: PathBuf, params: &mut create::Params) {
   to_controller_pack(path)
     .map(|controller_pack| {
-      let path_display = format!(r#""{}""#, controller_pack.display());
+      let path_display = format!(r#""{}""#, controller_pack.first_path().display());
       let cp_display = format!(r#"{controller_pack} ({path_display})"#);
       debug!("{path_display}: Controller Pack");
       if let Some(old) = params.as_mut().set_controller_pack(controller_pack) {
-        warn!(r#"{old} ("{}") replaced with {cp_display}"#, old.display());
+        warn!(
+          r#"{old} ("{}") replaced with {cp_display}"#,
+          old.first_path().display()
+        );
       }
     })
     .or_else(|(path, last_err)| {
       debug!("Not a Controller Pack: {last_err}");
       to_battery(path).map(|battery_file| {
-        let path_display = format!(r#""{}""#, battery_file.display());
+        let path_display = format!(r#""{}""#, battery_file.path().display());
         let new_type = battery_file.battery_type();
         debug!("{path_display}: {new_type} Battery");
         if let Some(old) = params.as_mut().set_battery(battery_file) {
           warn!(
             "Battery {} (\"{}\") replaced with {new_type} ({path_display})",
             old.battery_type(),
-            old.display()
+            old.path().display()
           );
         }
       })

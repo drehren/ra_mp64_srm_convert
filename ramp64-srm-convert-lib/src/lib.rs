@@ -1,6 +1,7 @@
 pub mod create;
 pub mod io;
 pub mod path;
+mod rzip;
 pub mod split;
 
 pub(crate) mod utils;
@@ -116,27 +117,23 @@ impl SrmBuf {
   }
 }
 
-impl std::ops::Deref for SrmBuf {
-  type Target = [u8];
-
-  fn deref(&self) -> &Self::Target {
-    self.data.deref()
+impl AsRef<[u8]> for SrmBuf {
+  fn as_ref(&self) -> &[u8] {
+    self.data.as_ref()
   }
 }
 
-impl std::ops::DerefMut for SrmBuf {
-  fn deref_mut(&mut self) -> &mut Self::Target {
-    self.data.deref_mut()
+impl AsMut<[u8]> for SrmBuf {
+  fn as_mut(&mut self) -> &mut [u8] {
+    self.data.as_mut()
   }
 }
 
 macro_rules! srm_internal_data {
-  ($name:ident, $is_empty:expr) => {
+  ($name:ident, $($is_empty:tt)*) => {
     struct $name<'srm>(&'srm [u8]);
     impl<'srm> IsEmpty for $name<'srm> {
-      fn is_empty(&self) -> bool {
-        $is_empty(self)
-      }
+      $($is_empty)*
     }
     impl<'srm> AsRef<[u8]> for $name<'srm> {
       fn as_ref(&self) -> &[u8] {
@@ -146,20 +143,22 @@ macro_rules! srm_internal_data {
   };
 
   ($name:ident) => {
-    srm_internal_data!($name, |x: &$name| x
-      .0
-      .iter()
-      .rposition(|b| *b != 0xff)
-      .is_none());
+    srm_internal_data!($name,
+                       fn is_empty(&self) -> bool {
+                         self.0.iter().rposition(|b| *b != 0xff).is_none()
+                       });
   };
 }
 
 srm_internal_data!(Eeprom);
 srm_internal_data!(FlashRam);
 srm_internal_data!(Sram);
-srm_internal_data!(ControllerPack, |me: &ControllerPack| {
-  path::controller_pack::is_empty(me.0)
-});
+srm_internal_data!(
+  ControllerPack,
+  fn is_empty(&self) -> bool {
+    path::controller_pack::is_empty(self.0)
+  }
+);
 
 impl<'srm> Eeprom<'srm> {
   pub(crate) fn is_4k(&self) -> bool {

@@ -3,7 +3,7 @@ use assert_fs::{fixture::ChildPath, prelude::*, TempDir};
 use predicates::prelude::*;
 use std::error::Error;
 use std::fmt::Display;
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use zip::ZipArchive;
 
@@ -360,3 +360,36 @@ impl Display for SrmWithoutOutputError {
   }
 }
 impl Error for SrmWithoutOutputError {}
+
+pub fn unrzip<P: AsRef<Path>>(path: P) -> std::io::Result<Vec<u8>> {
+  use flate2::{Decompress, FlushDecompress};
+  let mut file = std::fs::File::open(path)?;
+
+  let mut header = [0; 20];
+  file.read_exact(&mut header)?;
+
+  if header[0..8] != b"#RZIPv\x01#"[..] {
+    return Err(std::io::Error::new(
+      std::io::ErrorKind::Other,
+      "Not a RZip file",
+    ));
+  }
+
+  let mut output =
+    Vec::with_capacity(u64::from_le_bytes(header[12..20].try_into().unwrap()) as usize);
+
+  let mut buf = [0; 4];
+  while let Ok(_) = file.read_exact(&mut buf) {
+    let chunk_size = u32::from_le_bytes(buf);
+
+    let mut chunk = vec![0; chunk_size as usize];
+    file.read_exact(&mut chunk)?;
+
+    let mut decompress = Decompress::new(true);
+    decompress
+      .decompress_vec(&chunk[..], &mut output, FlushDecompress::Sync)
+      .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+  }
+
+  Ok(output)
+}

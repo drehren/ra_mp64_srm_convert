@@ -1,11 +1,15 @@
 //! Split a SRM file into its components
 
+use log::debug;
+
 use super::utils::word_swap;
 use super::{Converter, IsEmpty, UserParams};
 
 use crate::io::ReadExt;
+use crate::rzip::{RZip, RZipInfo};
 
 use std::io::prelude::*;
+use std::path::Path;
 
 #[derive(Clone, Debug, PartialEq)]
 /// Parameters to split a SRM file
@@ -127,6 +131,18 @@ impl From<Validation> for bool {
   }
 }
 
+fn is_rzip_srm<P: AsRef<Path>>(path: P) -> bool {
+  let rzip_info = match RZipInfo::new(&path) {
+    Ok(rz_info) => rz_info,
+    Err(err) => {
+      debug!("{} is not in an RZip: {err}", path.as_ref().display());
+      return false;
+    }
+  };
+  debug!("{} is an RZip: {}", path.as_ref().display(), rzip_info);
+  rzip_info.is_compressed() && rzip_info.uncompressed_len() == 0x48800
+}
+
 impl Converter for Params {
   type Error = super::Error;
 
@@ -137,20 +153,25 @@ impl Converter for Params {
       .srm_file
       .metadata()
       .map_or(Validation::FileNotFound, |m| {
-        if m.is_file() && m.len() == 0x48800 {
-          let mut srm_data = super::SrmBuf::new();
-          std::fs::File::open(&self.srm_file)
-            .and_then(|mut f| f.read_up_to(&mut srm_data))
-            .map_or(Validation::FileNotFound, |_| {
-              if srm_data.has_save_data() {
-                Validation::Ok
-              } else {
-                Validation::SrmEmpty
-              }
-            })
-        } else {
-          Validation::InvalidSrmSize
+        if !m.is_file() {
+          return Validation::InvalidSrmSize;
         }
+        let mut srm_buf = super::SrmBuf::new();
+        if m.len() == 0x48800 {
+          std::fs::File::open(&self.srm_file).map::<Box<dyn Read>, _>(|f| Box::new(f))
+        } else if is_rzip_srm(&self.srm_file) {
+          RZip::open(&self.srm_file).map::<Box<dyn Read>, _>(|rz| Box::new(rz))
+        } else {
+          Err(std::io::Error::new(std::io::ErrorKind::Other, ""))
+        }
+        .and_then(|mut f| f.read_up_to(srm_buf.as_mut()))
+        .map_or(Validation::InvalidSrmSize, |_| {
+          if srm_buf.has_save_data() {
+            Validation::Ok
+          } else {
+            Validation::SrmEmpty
+          }
+        })
       })
       | self.out_dir.as_ref().map_or(Validation::Ok, |o| {
         if o.is_dir() {
@@ -179,43 +200,50 @@ impl Converter for Params {
     let base_path = out_dir.map_or_else(|| srm_file.clone(), |o| o.join(name));
 
     // load the srm data
-    let mut srm_data = super::SrmBuf::new();
-    std::fs::File::open(&srm_file)
-      .and_then(|mut file| file.read_up_to(&mut srm_data))
-      .map_err(|e| super::Error(srm_file, e))?;
+    let mut srm_buf = super::SrmBuf::new();
+
+    if is_rzip_srm(&srm_file) {
+      RZip::open(&srm_file)
+        .and_then(|mut rz| rz.read_up_to(srm_buf.as_mut()))
+        .map_err(|e| super::Error(srm_file, e))?;
+    } else {
+      std::fs::File::open(&srm_file)
+        .and_then(|mut file| file.read_up_to(srm_buf.as_mut()))
+        .map_err(|e| super::Error(srm_file, e))?;
+    }
 
     let file_writer = FileWriter::new(&base_path, user_params);
 
-    if !srm_data.eeprom().is_empty() {
+    if !srm_buf.eeprom().is_empty() {
       if user_params.swap_bytes {
-        word_swap(srm_data.eeprom_mut());
+        word_swap(srm_buf.eeprom_mut());
       }
 
-      let buf = if srm_data.eeprom().is_4k() {
-        srm_data.eeprom().as_4k()
+      let buf = if srm_buf.eeprom().is_4k() {
+        srm_buf.eeprom().as_4k()
       } else {
-        srm_data.eeprom()
+        srm_buf.eeprom()
       };
 
       file_writer.create_file(buf.as_ref(), "eep")?;
     }
 
-    if !srm_data.sram().is_empty() {
-      file_writer.create_file(srm_data.sram(), "sra")?;
+    if !srm_buf.sram().is_empty() {
+      file_writer.create_file(srm_buf.sram(), "sra")?;
     }
 
-    if !srm_data.flashram().is_empty() {
+    if !srm_buf.flashram().is_empty() {
       if user_params.swap_bytes {
-        word_swap(srm_data.flashram_mut());
+        word_swap(srm_buf.flashram_mut());
       }
-      file_writer.create_file(srm_data.flashram(), "fla")?;
+      file_writer.create_file(srm_buf.flashram(), "fla")?;
     }
 
-    if srm_data.controller_pack_iter().any(|cp| !cp.is_empty()) {
+    if srm_buf.controller_pack_iter().any(|cp| !cp.is_empty()) {
       if output_mupen {
-        file_writer.create_file(srm_data.full_controller_pack(), "mpk")?;
+        file_writer.create_file(srm_buf.full_controller_pack(), "mpk")?;
       } else {
-        for (i, cp) in srm_data.controller_pack_iter().enumerate() {
+        for (i, cp) in srm_buf.controller_pack_iter().enumerate() {
           if !cp.is_empty() {
             file_writer.create_file(cp.as_ref(), format!("mpk{}", i + 1))?;
           }
@@ -228,12 +256,12 @@ impl Converter for Params {
 }
 
 struct FileWriter<'p> {
-  base_path: &'p std::path::Path,
+  base_path: &'p Path,
   create_opts: std::fs::OpenOptions,
 }
 
 impl<'p> FileWriter<'p> {
-  fn new<'b: 'p>(base_path: &'b std::path::Path, user_params: &UserParams) -> Self {
+  fn new<'b: 'p>(base_path: &'b Path, user_params: &UserParams) -> Self {
     let mut create_opts = std::fs::OpenOptions::new();
     create_opts
       .create(user_params.overwrite)
@@ -262,15 +290,17 @@ impl<'p> FileWriter<'p> {
 /// Checks the given path to determine if it can be used as a SRM file
 pub fn can_be_srm<P>(path: P) -> Result<P, (P, crate::io::Error)>
 where
-  P: AsRef<std::path::Path>,
+  P: AsRef<Path>,
 {
+  debug!("Checking if {:?} is a SRM", path.as_ref());
   match path.as_ref().metadata() {
     Ok(metadata) => {
-      if metadata.is_file() && metadata.len() == 0x48800 {
+      if metadata.is_file() && (metadata.len() == 0x48800 || is_rzip_srm(&path)) {
         Ok(path)
       } else {
         Err(if metadata.is_dir() {
           (path, crate::io::Error::PathIsDirectory)
+          // check if it is an rzip, and then check its size
         } else {
           (path, crate::io::Error::InvalidSize)
         })

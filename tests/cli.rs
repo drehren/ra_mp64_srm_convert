@@ -3,7 +3,7 @@ use assert_fs::prelude::{PathAssert, PathChild, PathCopy, PathCreateDir};
 use predicates::prelude::*;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::fs;
+use std::fs::{self};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tests_common::*;
@@ -153,7 +153,7 @@ fn split_srm_test() -> TestResult<()> {
   for srm in srm_files {
     let name = srm.file_stem().expect("srm without a name").to_os_string();
     let Some(files) = map.get(&name) else {
-      return Err(Box::new(SrmWithoutOutputError{}));
+      return Err(Box::new(SrmWithoutOutputError {}));
     };
 
     let create_run = run(
@@ -163,6 +163,13 @@ fn split_srm_test() -> TestResult<()> {
     )?;
 
     create_run.success();
+
+    if let Ok(len) = srm.metadata().map(|m| m.len()) {
+      if len < 0x48800 {
+        let data = unrzip(&srm)?;
+        std::fs::write(&srm, &data)?;
+      }
+    }
 
     data
       .out_dir()
@@ -224,7 +231,7 @@ fn verify_split_srm_mupen_mempack() -> TestResult<()> {
   for srm in srm_files {
     let name = srm.file_stem().expect("srm without a name").to_os_string();
     let Some(files) = map.get(&name) else {
-      return Err(Box::new(SrmWithoutOutputError{}));
+      return Err(Box::new(SrmWithoutOutputError {}));
     };
 
     let create_run = run(
@@ -234,6 +241,13 @@ fn verify_split_srm_mupen_mempack() -> TestResult<()> {
     )?;
 
     create_run.success();
+
+    if let Ok(len) = srm.metadata().map(|m| m.len()) {
+      if len < 0x48800 {
+        let data = unrzip(&srm)?;
+        std::fs::write(&srm, &data)?;
+      }
+    }
 
     data
       .out_dir()

@@ -23,7 +23,7 @@ impl BatteryPath {
   }
 
   pub(crate) fn validate_type(&self) -> crate::io::Result<()> {
-    let metadata = self.metadata()?;
+    let metadata = self.path.metadata()?;
     match self.battery_type {
       BatteryType::Eeprom => (0x1..=0x800).contains(&metadata.len()),
       BatteryType::Sram => (0x801..=0x8000).contains(&metadata.len()),
@@ -32,18 +32,9 @@ impl BatteryPath {
     .then_some(())
     .ok_or(crate::io::Error::InvalidSize)
   }
-}
 
-impl AsRef<std::path::Path> for BatteryPath {
-  fn as_ref(&self) -> &std::path::Path {
-    &self.path
-  }
-}
-
-impl std::ops::Deref for BatteryPath {
-  type Target = std::path::Path;
-
-  fn deref(&self) -> &Self::Target {
+  /// Gets the [`std::path::Path`] of this [`BatteryPath`].
+  pub fn path(&self) -> &std::path::Path {
     &self.path
   }
 }
@@ -108,13 +99,19 @@ impl std::fmt::Display for BatteryType {
 /// ```
 pub fn to_battery(path: std::path::PathBuf) -> Result<BatteryPath, (std::path::PathBuf, Error)> {
   match path.metadata() {
-    Ok(metadata) => match metadata.len() {
-      (0x1..=0x800) => Ok(BatteryPath::new(path, BatteryType::Eeprom)),
-      (0x801..=0x8000) => Ok(BatteryPath::new(path, BatteryType::Sram)),
-      (0x8001..=0x20000) => Ok(BatteryPath::new(path, BatteryType::FlashRam)),
-      _ if metadata.is_dir() => Err((path, Error::PathIsDirectory)),
-      _ => Err((path, Error::InvalidSize)),
-    },
+    Ok(metadata) => {
+      if let Ok(true) = crate::rzip::RZipInfo::new(&path).map(|f| f.is_compressed()) {
+        Err((path, Error::InvalidSize))
+      } else {
+        match metadata.len() {
+          0x200..=0x800 => Ok(BatteryPath::new(path, BatteryType::Eeprom)),
+          0x8000 => Ok(BatteryPath::new(path, BatteryType::Sram)),
+          0x20000 => Ok(BatteryPath::new(path, BatteryType::FlashRam)),
+          _ if metadata.is_dir() => Err((path, Error::PathIsDirectory)),
+          _ => Err((path, Error::InvalidSize)),
+        }
+      }
+    }
     Err(err) => {
       if err.kind() == std::io::ErrorKind::NotFound {
         let ext = path.extension().map(|s| s.to_ascii_uppercase());

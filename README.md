@@ -1,6 +1,6 @@
 # RetroArch N64 Save Converter
 
-A simple converter for Retroarch's Mupen64Plus core (uncompressed) save files; from eep, mpk*, sra or fla to srm (or viceversa).
+A simple converter for Retroarch's Mupen64Plus core save files; from eep, mpk*, sra or fla to srm (or viceversa).
 
 When a SRM file is split into its contents, only those contents with data will be created.
 
