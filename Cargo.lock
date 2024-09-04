@@ -482,7 +482,7 @@ dependencies = [
 
 [[package]]
 name = "ra_mp64_srm_convert"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "assert_cmd",
  "assert_fs",
